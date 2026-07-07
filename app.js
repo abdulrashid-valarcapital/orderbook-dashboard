@@ -127,7 +127,10 @@ function parseCsv(text) {
   function pushRow(values) {
     if (!values.some((value) => value.trim() !== "")) return;
     if (!headers) {
-      headers = values.map((header) => header.trim());
+      headers = values.map((header, index) => {
+        const clean = header.trim();
+        return index === 0 ? clean.replace(/^\uFEFF/, "") : clean;
+      });
       return;
     }
     const record = {};
@@ -185,6 +188,30 @@ function readFile(file) {
 
 function waitForPaint() {
   return new Promise((resolve) => scheduleFrame(() => resolve()));
+}
+
+function setChartStatus(message, isError = false) {
+  if (!els.chartSubtitle) return;
+  els.chartSubtitle.hidden = false;
+  els.chartSubtitle.textContent = message;
+  els.chartSubtitle.classList.toggle("negative", Boolean(isError));
+}
+
+function setUploadError(message) {
+  state.filterErrors = [message];
+  if (els.filterError) {
+    els.filterError.textContent = message;
+    els.filterError.classList.add("visible");
+  }
+  setChartStatus(message, true);
+}
+
+function clearUploadError() {
+  if (els.filterError && !(state.filterErrors || []).length) {
+    els.filterError.textContent = "";
+    els.filterError.classList.remove("visible");
+  }
+  if (els.chartSubtitle) els.chartSubtitle.classList.remove("negative");
 }
 
 function toNumber(value) {
@@ -1972,7 +1999,7 @@ function showTrade(index) {
   els.tradeCount.textContent = trade ? (state.activeIndex + 1) + " / " + trades.length : "0 / 0";
 
   if (!trade) {
-    els.chartSubtitle.textContent = state.trades.length ? "No trade matches the current filters." : "Upload an orderbook to begin.";
+    setChartStatus(state.trades.length ? "No trade matches the current filters." : "Upload an orderbook to begin.");
     els.selected.innerHTML = "";
     drawEmpty();
     return;
@@ -1982,7 +2009,7 @@ function showTrade(index) {
   const intervalLabel = formatCandlePeriod(state.candlePeriod);
   const candleStatus = realSeries ? { status: "loaded" } : requestServerCandles(trade);
   const chartMode = realSeries ? intervalLabel + " OHLC full history" : candleStatus.label;
-  els.chartSubtitle.textContent = trade.instrument + " trade #" + trade.id + " from " + formatDate(trade.entryDate) + " to " + formatDate(trade.exitDate) + " | " + chartMode;
+  setChartStatus(trade.instrument + " trade #" + trade.id + " from " + formatDate(trade.entryDate) + " to " + formatDate(trade.exitDate) + " | " + chartMode);
   els.selected.innerHTML = '<h2>Selected Trade</h2>' + [
     ["SNO", trade.sno || "-"],
     ["Trade", "#" + trade.id + " " + trade.type],
@@ -3164,28 +3191,51 @@ function escapeHtml(value) {
 els.orderBookInput.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  if (file.size >= LARGE_FILE_WARNING_BYTES) {
-    els.chartSubtitle.textContent = "Loading large OrderBook (" + formatNumber(file.size / 1048576, 1) + " MB). Please wait...";
+  try {
+    state.filterErrors = [];
+    clearUploadError();
+    setChartStatus("Reading OrderBook (" + formatNumber(file.size / 1048576, 1) + " MB). Please wait...");
     await waitForPaint();
-  }
-  const text = await readFile(file);
-  if (file.size >= LARGE_FILE_WARNING_BYTES) {
-    els.chartSubtitle.textContent = "Parsing large OrderBook and preparing dashboard...";
+
+    const text = await readFile(file);
+    setChartStatus("Parsing OrderBook and preparing dashboard...");
     await waitForPaint();
+
+    const records = parseCsv(text);
+    if (!records.length) {
+      throw new Error("No CSV rows found. Please check that the first row has headers and the file is comma-separated.");
+    }
+
+    updateDynamicFilterFields(Object.keys(records[0]), records);
+    const trades = normalizeOrderBook(records).sort((a, b) => a.entryDate - b.entryDate);
+    if (!trades.length) {
+      throw new Error("Parsed " + formatNumber(records.length, 0) + " rows, but none had valid EntryDate, EntryTime, EntryPrice, ExitDate, ExitTime and ExitPrice values.");
+    }
+
+    state.trades = trades;
+    invalidateTradeCaches();
+    state.orderbookView = "trade";
+    state.selectedSno = "All";
+    state.activeIndex = 0;
+    els.stockSearchInput.value = "";
+    state.chartWindowStartByTrade.clear();
+    state.chartWindowSizeByPeriod.clear();
+    populateSnoSelect();
+    populateInstrumentFilter();
+    renderFilterRules();
+    applyFilters();
+  } catch (error) {
+    console.error("OrderBook upload failed", error);
+    state.trades = [];
+    state.filteredTrades = [];
+    invalidateTradeCaches();
+    populateSnoSelect();
+    populateInstrumentFilter();
+    renderFilterRules();
+    render();
+    const reason = error && error.message ? error.message : String(error);
+    setUploadError("OrderBook load failed: " + reason);
   }
-  const records = parseCsv(text);
-  updateDynamicFilterFields(records.length ? Object.keys(records[0]) : [], records);
-  state.trades = normalizeOrderBook(records).sort((a, b) => a.entryDate - b.entryDate);
-  invalidateTradeCaches();
-  state.orderbookView = "trade";
-  state.selectedSno = "All";
-  els.stockSearchInput.value = "";
-  state.chartWindowStartByTrade.clear();
-  state.chartWindowSizeByPeriod.clear();
-  populateSnoSelect();
-  populateInstrumentFilter();
-  renderFilterRules();
-  applyFilters();
 });
 
 els.overallInput.addEventListener("change", async (event) => {
