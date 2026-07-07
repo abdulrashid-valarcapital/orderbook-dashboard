@@ -2175,12 +2175,16 @@ function drawMissingCandles(trade, candleStatus) {
   ctx.fillStyle = "#647184";
   ctx.font = "13px system-ui, sans-serif";
   ctx.fillText(candleStatus.message || candleStatus.label || "Waiting for local candle data.", w / 2, h / 2 - 8);
-  ctx.fillText(trade.instrument + " trade #" + trade.id + " needs the local candle server at http://localhost:8765", w / 2, h / 2 + 18);
+  ctx.fillText(trade.instrument + " trade #" + trade.id + " needs candle data from " + candleDataSourceLabel(), w / 2, h / 2 + 18);
 
   ctx.fillStyle = "#c7362f";
   ctx.font = "700 13px system-ui, sans-serif";
   ctx.fillText("No fallback candles are drawn here because they are not valid " + formatCandlePeriod(state.candlePeriod) + " market candles.", w / 2, h / 2 + 48);
   disableChartWindowControls("Waiting for full candle data.");
+}
+
+function candleDataSourceLabel() {
+  return window.location.protocol === "file:" ? "http://localhost:8765" : window.location.origin;
 }
 
 function visibleTradeOverlays(activeTrade, series) {
@@ -2786,8 +2790,8 @@ function requestServerCandles(trade) {
   if (state.candleFetchDisabled) {
     return {
       status: "disabled",
-      label: "Local candle server unavailable",
-      message: "The browser could not reach the candle API. Start the local server with: node server.js",
+      label: "Candle API unavailable",
+      message: "The browser could not reach the candle API for this dashboard.",
     };
   }
 
@@ -2804,8 +2808,8 @@ function requestServerCandles(trade) {
   if (state.candleRequests.has(key)) {
     return {
       status: "pending",
-      label: "Loading " + formatCandlePeriod(state.candlePeriod) + " candles from local store",
-      message: "Reading full " + trade.instrument + " candle history from the local mmap price store.",
+      label: "Loading " + formatCandlePeriod(state.candlePeriod) + " candles",
+      message: "Reading full " + trade.instrument + " candle history from the candle data store.",
     };
   }
 
@@ -2857,8 +2861,8 @@ function requestServerCandles(trade) {
 
   return {
     status: "started",
-    label: "Loading " + formatCandlePeriod(state.candlePeriod) + " candles from local store",
-    message: "Reading full " + trade.instrument + " candle history from the local mmap price store.",
+    label: "Loading " + formatCandlePeriod(state.candlePeriod) + " candles",
+    message: "Reading full " + trade.instrument + " candle history from the candle data store.",
   };
 }
 

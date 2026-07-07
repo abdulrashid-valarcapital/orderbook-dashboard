@@ -2,6 +2,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const childProcess = require("child_process");
+const zlib = require("zlib");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT || 8765);
@@ -10,6 +11,8 @@ const DEFAULT_PRICE_STORE_ZIP = "/Users/abdulrashid/Library/CloudStorage/GoogleD
 const PRICE_STORE_CACHE_ROOT = process.env.PRICE_STORE_CACHE_ROOT || path.join(DASHBOARD_ROOT, ".priceStoreCache");
 const PRICE_STORE_ZIP_URL = process.env.PRICE_STORE_ZIP_URL || "";
 const PRICE_STORE_ZIP_ID = process.env.PRICE_STORE_ZIP_ID || "";
+const PRICE_STORE_SYMBOL_BASE_URL = process.env.PRICE_STORE_SYMBOL_BASE_URL || "";
+const SYMBOL_CANDLE_CACHE_ROOT = process.env.SYMBOL_CANDLE_CACHE_ROOT || path.join(PRICE_STORE_CACHE_ROOT, "symbols");
 const PRICE_STORE_ZIP_CACHE = process.env.PRICE_STORE_ZIP_CACHE || path.join(PRICE_STORE_CACHE_ROOT, "pricestore_snapshot_full.zip");
 const PRICE_STORE_ZIP = process.env.PRICE_STORE_ZIP
   || (fs.existsSync(DEFAULT_PRICE_STORE_ZIP) ? DEFAULT_PRICE_STORE_ZIP : "")
@@ -24,6 +27,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const cache = {
   instrumentIds: null,
   seriesByTimeframe: new Map(),
+  symbolCandles: new Map(),
 };
 
 function normalizeSymbol(value) {
@@ -32,6 +36,10 @@ function normalizeSymbol(value) {
 
 function compactSymbol(value) {
   return normalizeSymbol(value).replace(/[^A-Z0-9]/g, "");
+}
+
+function symbolAssetName(symbol) {
+  return compactSymbol(symbol) + "_5m.json.gz";
 }
 
 function googleDriveDownloadUrl(value) {
@@ -66,17 +74,32 @@ function downloadFile(sourceUrl, targetPath, redirectCount = 0) {
 
     if (!isZipFile(tempPath) && /drive\.google\.com/i.test(sourceUrl)) {
       const page = fs.readFileSync(tempPath, "utf8");
-      const confirm = page.match(/confirm=([0-9A-Za-z_-]+)/);
-      const uuid = page.match(/uuid=([0-9A-Za-z_-]+)/);
-      const fileId = sourceUrl.match(/[?&]id=([^&]+)/);
-      if (confirm && fileId) {
-        const confirmedUrl = "https://drive.google.com/uc?export=download"
-          + "&confirm=" + encodeURIComponent(confirm[1])
-          + "&id=" + encodeURIComponent(decodeURIComponent(fileId[1]))
-          + (uuid ? "&uuid=" + encodeURIComponent(uuid[1]) : "");
-        childProcess.execFileSync("curl", ["-L", "--fail", "--cookie", cookiePath, "--output", tempPath, confirmedUrl], {
+      const formUrl = googleDriveConfirmUrl(page);
+      if (formUrl) {
+        childProcess.execFileSync("curl", ["-L", "--fail", "--cookie", cookiePath, "--output", tempPath, formUrl], {
           stdio: ["ignore", "ignore", "pipe"],
         });
+      } else {
+        const confirm = page.match(/confirm=([0-9A-Za-z_-]+)/);
+        const uuid = page.match(/uuid=([0-9A-Za-z_-]+)/);
+        const fileId = sourceUrl.match(/[?&]id=([^&]+)/);
+        if (confirm && fileId) {
+          const confirmedUrl = "https://drive.google.com/uc?export=download"
+            + "&confirm=" + encodeURIComponent(confirm[1])
+            + "&id=" + encodeURIComponent(decodeURIComponent(fileId[1]))
+            + (uuid ? "&uuid=" + encodeURIComponent(uuid[1]) : "");
+          childProcess.execFileSync("curl", ["-L", "--fail", "--cookie", cookiePath, "--output", tempPath, confirmedUrl], {
+            stdio: ["ignore", "ignore", "pipe"],
+          });
+        }
+      }
+    }
+
+    if (!isZipFile(tempPath) && /drive\.google\.com|drive\.usercontent\.google\.com/i.test(sourceUrl)) {
+      const page = fs.readFileSync(tempPath, "utf8");
+      const size = googleDriveWarningSize(page);
+      if (size) {
+        throw new Error("Google Drive returned a warning page for a " + size + " file instead of the zip. The file is too large for this free Render setup; use a smaller candle bundle or range-capable storage.");
       }
     }
 
@@ -91,6 +114,50 @@ function downloadFile(sourceUrl, targetPath, redirectCount = 0) {
     throw new Error(`Download failed for ${sourceUrl}: ${error.message}`);
   }
   if (fs.existsSync(cookiePath)) fs.unlinkSync(cookiePath);
+}
+
+function downloadRawFile(sourceUrl, targetPath) {
+  const tempPath = `${targetPath}.download`;
+  try {
+    childProcess.execFileSync("curl", ["-L", "--fail", "--output", tempPath, sourceUrl], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    throw new Error(`Download failed for ${sourceUrl}: ${error.message}`);
+  }
+}
+
+function googleDriveConfirmUrl(page) {
+  const action = page.match(/<form[^>]+id=["']download-form["'][^>]+action=["']([^"']+)["']/i);
+  if (!action) return "";
+
+  const params = new URLSearchParams();
+  const inputs = page.matchAll(/<input[^>]+type=["']hidden["'][^>]*>/gi);
+  for (const match of inputs) {
+    const tag = match[0];
+    const name = tag.match(/\sname=["']([^"']+)["']/i);
+    const value = tag.match(/\svalue=["']([^"']*)["']/i);
+    if (name) params.set(decodeHtml(name[1]), decodeHtml(value ? value[1] : ""));
+  }
+
+  if (!params.has("id")) return "";
+  return decodeHtml(action[1]) + "?" + params.toString();
+}
+
+function googleDriveWarningSize(page) {
+  const match = page.match(/\(([^()]+)\)\s+is too large for Google to scan/i);
+  return match ? match[1] : "";
+}
+
+function decodeHtml(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
 
 function isZipFile(filePath) {
@@ -220,6 +287,10 @@ function upperBound(fd, left, right, targetMs) {
 }
 
 function candlesBetween(symbol, timeframe, fromMs, toMs) {
+  if (PRICE_STORE_SYMBOL_BASE_URL) {
+    return symbolCandlesBetween(symbol, timeframe, fromMs, toMs);
+  }
+
   if (timeframe === 60) {
     const source = candlesBetween(symbol, 5, fromMs, toMs);
     if (source.status !== 200) return source;
@@ -259,6 +330,50 @@ function candlesBetween(symbol, timeframe, fromMs, toMs) {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
+  if (timeframe === 1) {
+    return { status: 404, payload: { error: "1m candles are not hosted in the lightweight candle store. Select 5m or higher." } };
+  }
+
+  const source = readRemoteSymbolCandles(symbol);
+  if (!source.length) {
+    return { status: 404, payload: { error: `No hosted 5m candles found for ${symbol}` } };
+  }
+
+  const filtered = source.filter((candle) => candle[0] >= fromMs && candle[0] <= toMs);
+  const candles = timeframe === 5 ? filtered : aggregateCandles(filtered, timeframe);
+  return {
+    status: 200,
+    payload: {
+      symbol,
+      timeframe,
+      candles,
+    },
+  };
+}
+
+function readRemoteSymbolCandles(symbol) {
+  const key = compactSymbol(symbol);
+  if (cache.symbolCandles.has(key)) return cache.symbolCandles.get(key);
+
+  const filePath = ensureRemoteSymbolFile(symbol);
+  const candles = JSON.parse(zlib.gunzipSync(fs.readFileSync(filePath)).toString("utf8"));
+  cache.symbolCandles.set(key, candles);
+  return candles;
+}
+
+function ensureRemoteSymbolFile(symbol) {
+  const fileName = symbolAssetName(symbol);
+  const filePath = path.join(SYMBOL_CANDLE_CACHE_ROOT, fileName);
+  if (fs.existsSync(filePath)) return filePath;
+
+  fs.mkdirSync(SYMBOL_CANDLE_CACHE_ROOT, { recursive: true });
+  const base = PRICE_STORE_SYMBOL_BASE_URL.endsWith("/") ? PRICE_STORE_SYMBOL_BASE_URL : PRICE_STORE_SYMBOL_BASE_URL + "/";
+  const sourceUrl = base + encodeURIComponent(fileName);
+  downloadRawFile(sourceUrl, filePath);
+  return filePath;
 }
 
 function candleBucketStart(timestampMs, timeframe) {
@@ -347,6 +462,7 @@ const server = http.createServer((req, res) => {
         priceStoreRoot: PRICE_STORE_ROOT,
         priceStoreZipConfigured: Boolean(PRICE_STORE_ZIP),
         priceStoreZipUrlConfigured: Boolean(PRICE_STORE_ZIP_URL || PRICE_STORE_ZIP_ID),
+        symbolCandleStoreConfigured: Boolean(PRICE_STORE_SYMBOL_BASE_URL),
       });
       return;
     }

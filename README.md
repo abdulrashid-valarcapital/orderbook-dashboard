@@ -35,9 +35,13 @@ Render environment variables:
 ```text
 PRICE_STORE_ZIP_ID=<google_drive_file_id>
 PRICE_STORE_CACHE_ROOT=/tmp/priceStoreCache
+PRICE_STORE_SYMBOL_BASE_URL=https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-5m-v1/
 ```
 
-The Google Drive zip must be shared so Render can download it.
+For hosted demos, prefer `PRICE_STORE_SYMBOL_BASE_URL`. It points at per-symbol
+5m candle files, so the server downloads only the instrument being charted and
+aggregates 5m candles into 15m, 30m, 1h, and 1day views. The full Google Drive
+zip can remain configured as a fallback, but it is too large for free hosting.
 
 Health check:
 
@@ -47,7 +51,7 @@ Health check:
 
 ## Important Free Hosting Limitation
 
-The full price-store zip is about 4 GB compressed and about 14.5 GB extracted. Render free services have an ephemeral filesystem and can spin down, so this setup is acceptable for demos/testing but not ideal for reliable production.
+The full price-store zip is about 4 GB compressed and about 14.5 GB extracted. Render free services have an ephemeral filesystem and can spin down, so the hosted dashboard uses the lightweight per-symbol 5m release assets instead.
 
 For stable production, use one of these:
 

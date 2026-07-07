@@ -12,3 +12,5 @@ services:
         value: /tmp/priceStoreCache
       - key: PRICE_STORE_ZIP_ID
         sync: false
+      - key: PRICE_STORE_SYMBOL_BASE_URL
+        value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-5m-v1/
