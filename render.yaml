@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: orderbook-dashboard
+    runtime: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "node server.js"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PRICE_STORE_CACHE_ROOT
+        value: /tmp/priceStoreCache
+      - key: PRICE_STORE_ZIP_ID
+        sync: false

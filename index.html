@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OrderBook Trade Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>OrderBook Trade Dashboard</h1>
+      <div class="subtle">Upload OrderBook.csv and OverAllDetails.csv to review entry and exit movement by stock or index.</div>
+    </div>
+    <div class="header-actions">
+      <div class="page-tabs" aria-label="Dashboard pages">
+        <button type="button" id="orderbookDashboardTab" class="active">Orderbook Dashboard</button>
+        <button type="button" id="filterOrderbookTab">Filter Orderbook</button>
+      </div>
+      <div class="subtle" id="generatedAt"></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="upload-panel" id="uploadPanel">
+      <label class="upload-box">
+        <strong>OrderBook CSV</strong>
+        <span class="subtle">Required. Uses Instrument, EntryDate, EntryTime, EntryPrice, ExitDate, ExitTime, ExitPrice, Profit and TradeId.</span>
+        <input id="orderBookInput" type="file" accept=".csv,text/csv">
+      </label>
+      <label class="upload-box">
+        <strong>OverAllDetails CSV</strong>
+        <span class="subtle">Optional. If uploaded, strategy-level totals replace calculated cards where available.</span>
+        <input id="overallInput" type="file" accept=".csv,text/csv">
+      </label>
+      <div class="upload-box">
+        <strong>SNO Filter</strong>
+        <span class="subtle">Select one SNO to show its trades, stats, chart, filter dashboard, and downloads.</span>
+        <select id="snoSelect" disabled>
+          <option value="All">Upload OrderBook first</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="insights" id="insights"></section>
+
+    <section class="filter-dashboard" id="filterDashboard" hidden>
+      <div class="filter-dashboard-grid">
+        <div class="filter-builder-panel">
+          <div class="filter-header">
+            <div>
+              <h2>Filter Orderbook</h2>
+              <div class="subtle">Select fields from the orderbook, set ranges or text filters, then the same chart and tables below show only matching trades.</div>
+            </div>
+            <div class="filter-actions">
+              <button type="button" id="addFilterRule">+ Add Filter</button>
+              <button type="button" id="resetFilterRules">Reset</button>
+              <button type="button" id="downloadFilteredOrderbook" disabled>Download Filtered OrderBook</button>
+              <button type="button" id="downloadFormulaOrderbook" disabled>Download Excel With Formulas</button>
+            </div>
+          </div>
+          <div class="filter-rules" id="filterRules"></div>
+          <div class="filter-status" id="filterStatus">Upload an OrderBook CSV first, then open Filter Orderbook.</div>
+          <div class="filter-error" id="filterError"></div>
+        </div>
+        <aside class="year-distribution">
+          <div>
+            <h2>YearWise Distribution</h2>
+            <div class="subtle">Calculated from current filtered trades.</div>
+          </div>
+          <div class="year-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Year</th>
+                  <th>Trades</th>
+                  <th>Profit</th>
+                </tr>
+              </thead>
+              <tbody id="yearDistributionRows">
+                <tr><td colspan="3" class="empty">No filtered trades yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="trade-workspace">
+      <section class="chart-wrap">
+        <div class="toolbar">
+          <div class="subtle" id="chartSubtitle" hidden>Upload an orderbook to begin.</div>
+          <div class="controls">
+            <div class="filters">
+              <label>
+                <span class="label">Instrument</span>
+                <select id="instrumentFilter" disabled></select>
+              </label>
+              <label>
+                <span class="label">Candle</span>
+                <select id="candlePeriodSelect" disabled>
+                  <option value="1">1 Minute</option>
+                  <option value="5" selected>5 Minute</option>
+                  <option value="15">15 Minute</option>
+                  <option value="30">30 Minute</option>
+                  <option value="60">1 Hour</option>
+                  <option value="375">1 Day</option>
+                </select>
+              </label>
+              <label>
+                <span class="label">Search</span>
+                <input id="searchInput" type="search" placeholder="Trade id, stock, exit reason" disabled>
+              </label>
+              <label>
+                <span class="label">Indicator</span>
+                <span class="indicator-picker">
+                  <select id="indicatorSelect" disabled>
+                    <option value="bb">BollingerBand</option>
+                    <option value="sma">SMA</option>
+                    <option value="macd">MACD</option>
+                    <option value="rsi">RSI</option>
+                    <option value="ema">EMA</option>
+                    <option value="adx">ADX</option>
+                    <option value="supertrend">Supertrend</option>
+                  </select>
+                  <button type="button" id="addIndicator" title="Add indicator" disabled>+</button>
+                </span>
+              </label>
+            </div>
+            <button type="button" id="prevTrade" disabled>Prev</button>
+            <span class="trade-count" id="tradeCount">0 / 0</span>
+            <button type="button" id="nextTrade" disabled>Next</button>
+            <div class="legend">
+              <span><span class="dot entry"></span>Entry</span>
+              <span><span class="dot exit"></span>Exit</span>
+              <span><span class="dot profit"></span>Profit</span>
+              <span><span class="dot loss"></span>Loss</span>
+            </div>
+          </div>
+        </div>
+        <div class="indicator-chips" id="indicatorChips"></div>
+        <div class="window-bar">
+          <span class="window-label" id="chartWindowLabel">No candle window loaded.</span>
+          <div class="zoom-controls" aria-label="Chart size controls">
+            <button type="button" id="contractChart" title="Contract chart: show fewer candles" disabled>-</button>
+            <button type="button" id="expandChart" title="Expand chart: show more candles" disabled>+</button>
+          </div>
+        </div>
+        <canvas id="chart" width="1600" height="680"></canvas>
+        <div class="candle-crosshair" id="candleCrosshair"></div>
+        <div class="candle-tooltip" id="candleTooltip"></div>
+      </section>
+
+      <aside class="selected" id="selected"></aside>
+    </section>
+
+    <section class="orderbook-panel">
+      <div class="orderbook-tabs">
+        <button type="button" id="tradeWiseOrderbook" class="active">TradeWiseOrderbook</button>
+        <button type="button" id="stocksWiseOrderbook">StocksWiseOrderbook</button>
+      </div>
+      <div class="stock-tools" id="stockOrderbookTools" hidden>
+        <h2>Instrument Selection</h2>
+        <input id="stockSearchInput" type="search" placeholder="Search instrument" disabled>
+      </div>
+      <section class="table-wrap">
+        <table>
+          <thead id="orderbookHead">
+            <tr>
+              <th>Trade</th>
+              <th>Instrument</th>
+              <th>Type</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Entry Price</th>
+              <th>Exit Price</th>
+              <th>Profit</th>
+              <th>Profit Cost %</th>
+              <th>Max Profit %</th>
+              <th>Rank</th>
+              <th>Exit Reason</th>
+            </tr>
+          </thead>
+          <tbody id="tradeRows">
+            <tr><td colspan="12" class="empty">No uploaded orderbook yet.</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </section>
+  </main>
+
+  <div class="indicator-modal" id="indicatorModal" hidden>
+    <div class="indicator-dialog" role="dialog" aria-modal="true" aria-labelledby="indicatorModalTitle">
+      <header>
+        <h2 id="indicatorModalTitle">Indicator Settings</h2>
+        <button type="button" id="closeIndicatorSettings" title="Close">x</button>
+      </header>
+      <div class="indicator-settings-grid" id="indicatorSettingsBody"></div>
+      <div class="indicator-dialog-actions">
+        <button type="button" id="cancelIndicatorSettings">Cancel</button>
+        <button type="button" id="saveIndicatorSettings">Ok</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
