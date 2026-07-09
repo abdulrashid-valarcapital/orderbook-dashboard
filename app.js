@@ -2146,7 +2146,7 @@ function drawRealCandleTrade(trade, series) {
   const maxPrice = rawMax + pad;
   const slotWidth = plotW / Math.max(1, series.candles.length);
   const candleWidth = Math.max(4, Math.min(14, slotWidth * 0.62));
-  state.chartHover = { candles: series.candles, indicators: indicatorData, left, right: left + plotW, top, bottom: volumeH ? volumeTop + volumeH : top + plotH + panelTotalH, slotWidth };
+  state.chartHover = { candles: series.candles, indicators: indicatorData, overlays, left, right: left + plotW, top, bottom: volumeH ? volumeTop + volumeH : top + plotH + panelTotalH, slotWidth };
   const entryX = entryVisible ? candleX(activeOverlay.entryIndex, left, slotWidth) : null;
   const exitX = exitVisible ? candleX(activeOverlay.exitIndex, left, slotWidth) : null;
   const yEntry = yScale(trade.entryPrice, top, plotH, minPrice, maxPrice);
@@ -3040,7 +3040,7 @@ function handleCandleHover(event) {
   const index = clamp(Math.floor((x - hover.left) / hover.slotWidth), 0, hover.candles.length - 1);
   const candle = hover.candles[index];
   showCandleCrosshair(candleX(index, hover.left, hover.slotWidth), hover);
-  showCandleTooltip(event, candle, indicatorTooltipRows(hover.indicators || [], index));
+  showCandleTooltip(event, candle, tradeTooltipRows(hover.overlays || [], index).concat(indicatorTooltipRows(hover.indicators || [], index)));
 }
 
 function showCandleCrosshair(x, hover) {
@@ -3071,6 +3071,19 @@ function showCandleTooltip(event, candle, indicatorRows = []) {
   if (top + tooltipRect.height > wrapRect.height - 8) top = event.clientY - wrapRect.top - tooltipRect.height - 14;
   els.candleTooltip.style.left = Math.max(8, left) + "px";
   els.candleTooltip.style.top = Math.max(8, top) + "px";
+}
+
+function tradeTooltipRows(overlays, index) {
+  return overlays.flatMap((overlay) => {
+    const rows = [];
+    if (overlay.entryVisible && overlay.entryIndex === index) {
+      rows.push('<span class="tooltip-entry">Entry #' + escapeHtml(overlay.trade.id) + ': ' + escapeHtml(formatPlain(overlay.trade.entryPrice, 2)) + '</span>');
+    }
+    if (overlay.exitVisible && overlay.exitIndex === index) {
+      rows.push('<span class="tooltip-exit">Exit #' + escapeHtml(overlay.trade.id) + ': ' + escapeHtml(formatPlain(overlay.trade.exitPrice, 2)) + '</span>');
+    }
+    return rows;
+  });
 }
 
 function indicatorTooltipRows(indicators, index) {

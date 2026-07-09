@@ -604,6 +604,20 @@ canvas {
   margin: 5px 0;
 }
 
+.tooltip-entry,
+.tooltip-exit {
+  display: block;
+  font-weight: 800;
+}
+
+.tooltip-entry {
+  color: #74a7ff;
+}
+
+.tooltip-exit {
+  color: #f6b04d;
+}
+
 .candle-crosshair {
   position: absolute;
   display: none;
