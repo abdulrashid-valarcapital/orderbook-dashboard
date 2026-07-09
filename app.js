@@ -2301,6 +2301,7 @@ function drawTradeOverlays(overlays, left, slotWidth, top, height, minPrice, max
   overlays.forEach((overlay) => {
     const trade = overlay.trade;
     const color = trade.profit >= 0 ? "#12805c" : "#c7362f";
+    const connectorColor = overlay.active ? "#111827" : color;
     const lineWidth = overlay.active ? 2.5 : 1.4;
     const markerSize = overlay.active ? 7 : 6;
     const showPrice = overlay.active || showSecondaryPrices;
@@ -2311,7 +2312,7 @@ function drawTradeOverlays(overlays, left, slotWidth, top, height, minPrice, max
       const entryY = yScale(trade.entryPrice, top, height, minPrice, maxPrice);
       const exitY = yScale(trade.exitPrice, top, height, minPrice, maxPrice);
       ctx.globalAlpha = overlay.active ? 1 : 0.6;
-      ctx.strokeStyle = color;
+      ctx.strokeStyle = connectorColor;
       ctx.lineWidth = lineWidth;
       ctx.beginPath();
       ctx.moveTo(entryX, entryY);
