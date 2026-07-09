@@ -1117,13 +1117,31 @@ function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrad
   const helperHeaders = filterHeaders.map((item) => item.header);
   const existingExitYearCol = columnIndex(headers, ["ExitYear"]);
   const addedYearHeaders = existingExitYearCol ? [] : ["ExitYear"];
-  const orderbookHeaders = headers.concat(addedYearHeaders, [""], helperHeaders, ["", "NET"]);
+  const orderbookHeaders = headers.concat(addedYearHeaders, [""], helperHeaders, ["", "Filter Net", "", "Entry time", "Exit time", "Entries", "Exits", "Active Trade", "Include Active", "", "NET"]);
   const separatorCol = headers.length + addedYearHeaders.length + 1;
   const helperStartCol = separatorCol + 1;
-  const netCol = orderbookHeaders.length;
+  const filterNetCol = helperStartCol + activeRules.length + 1;
+  const activeStartCol = filterNetCol + 2;
+  const activeRefs = {
+    entryTimeCol: activeStartCol,
+    exitTimeCol: activeStartCol + 1,
+    entriesCol: activeStartCol + 2,
+    exitsCol: activeStartCol + 3,
+    activeTradeCol: activeStartCol + 4,
+    includeActiveCol: activeStartCol + 5,
+  };
+  const netCol = activeRefs.includeActiveCol + 2;
   const profitCostCol = profitCostPercentColumnIndex(headers) || columnIndex(headers, ["Profit%"]) || columnIndex(headers, ["Profit"]) || 1;
   const exitYearCol = existingExitYearCol || headers.length + 1;
   const holdingCol = columnIndex(headers, ["HoldingPeriod", "Holding Period"]) || 6;
+  const instrumentCol = columnIndex(headers, ["Instrument", "Symbol"]) || 2;
+  const snoCol = columnIndex(headers, ["SSU", "SNO", "SNo", "S.No", "SsuId", "SSUID", "SsuID", "Ssu Id"]) || 1;
+  const entryDateCol = columnIndex(headers, ["EntryDate", "Entry Date"]) || 0;
+  const entryTimeCol = columnIndex(headers, ["EntryTime", "Entry Time"]) || 0;
+  const exitDateCol = columnIndex(headers, ["ExitDate", "Exit Date"]) || 0;
+  const exitTimeCol = columnIndex(headers, ["ExitTime", "Exit Time"]) || 0;
+  const activeTradeFilterRow = activeRules.length + 2;
+  const lastRow = sourceTrades.length + 1;
   const rows = [];
 
   rows.push(xlsxRow(1, orderbookHeaders.map((header, index) => xlsxValueCell(1, index + 1, header))));
@@ -1146,20 +1164,45 @@ function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrad
     const netFormula = activeRules.length
       ? "PRODUCT(" + xlsxAddress(rowNumber, helperStartCol) + ":" + xlsxAddress(rowNumber, helperStartCol + activeRules.length - 1) + ")"
       : "1";
-    cells.push(xlsxFormulaCell(rowNumber, netCol, netFormula, "1"));
+    cells.push(xlsxFormulaCell(rowNumber, filterNetCol, netFormula, "1"));
+    cells.push(xlsxValueCell(rowNumber, filterNetCol + 1, ""));
+    cells.push(xlsxFormulaCell(rowNumber, activeRefs.entryTimeCol, xlsxDateTimeFormula(rowNumber, filterNetCol, entryDateCol, entryTimeCol), ""));
+    cells.push(xlsxFormulaCell(rowNumber, activeRefs.exitTimeCol, xlsxDateTimeFormula(rowNumber, filterNetCol, exitDateCol, exitTimeCol), ""));
+    cells.push(xlsxFormulaCell(rowNumber, activeRefs.entriesCol, xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, activeRefs.entryTimeCol, activeRefs.entryTimeCol, lastRow), "0"));
+    cells.push(xlsxFormulaCell(rowNumber, activeRefs.exitsCol, xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, activeRefs.exitTimeCol, activeRefs.entryTimeCol, lastRow), "0"));
+    cells.push(xlsxFormulaCell(rowNumber, activeRefs.activeTradeCol, xlsxAddress(rowNumber, activeRefs.entriesCol) + "-" + xlsxAddress(rowNumber, activeRefs.exitsCol), "0"));
+    cells.push(xlsxFormulaCell(rowNumber, activeRefs.includeActiveCol, "IF(AND(" + xlsxAddress(rowNumber, activeRefs.activeTradeCol) + ">=Sheet1!$C$" + activeTradeFilterRow + "," + xlsxAddress(rowNumber, activeRefs.activeTradeCol) + "<=Sheet1!$D$" + activeTradeFilterRow + "),1,0)", "0"));
+    cells.push(xlsxValueCell(rowNumber, activeRefs.includeActiveCol + 1, ""));
+    cells.push(xlsxFormulaCell(rowNumber, netCol, xlsxAddress(rowNumber, filterNetCol) + "*" + xlsxAddress(rowNumber, activeRefs.includeActiveCol), "1"));
     rows.push(xlsxRow(rowNumber, cells));
   });
 
   return {
     refs: {
-      lastRow: sourceTrades.length + 1,
+      lastRow,
       netCol,
+      filterNetCol,
       profitCostCol,
       exitYearCol,
       holdingCol,
     },
     xml: xlsxWorksheetXml(rows.join("")),
   };
+}
+
+function xlsxDateTimeFormula(rowNumber, filterNetCol, dateCol, timeCol) {
+  if (!dateCol || !timeCol) return 'IF(' + xlsxAddress(rowNumber, filterNetCol) + '=1,"","")';
+  const dateCell = xlsxAddress(rowNumber, dateCol);
+  const timeCell = xlsxAddress(rowNumber, timeCol);
+  return "IF(" + xlsxAddress(rowNumber, filterNetCol) + "=1,DATEVALUE(" + dateCell + ")+TIMEVALUE(" + timeCell + "),\"\")";
+}
+
+function xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, dateTimeRangeCol, currentEntryTimeCol, lastRow) {
+  return "COUNTIFS(" +
+    xlsxRange(2, instrumentCol, lastRow, instrumentCol) + "," + xlsxAddress(rowNumber, instrumentCol) + "," +
+    xlsxRange(2, snoCol, lastRow, snoCol) + "," + xlsxAddress(rowNumber, snoCol) + "," +
+    xlsxRange(2, dateTimeRangeCol, lastRow, dateTimeRangeCol) + ",\"<=\"&" + xlsxAddress(rowNumber, currentEntryTimeCol) +
+  ")";
 }
 
 function buildSummaryXlsxSheet(headers, activeRules, filterHeaders, refs) {
@@ -1185,6 +1228,12 @@ function buildSummaryXlsxSheet(headers, activeRules, filterHeaders, refs) {
     setCell(rowNumber, 7, xlsxFormulaCell(rowNumber, 7, xlsxYearTradesFormula(rowNumber, refs), "0"));
     setCell(rowNumber, 8, xlsxFormulaCell(rowNumber, 8, xlsxYearProfitFormula(rowNumber, refs), "0"));
   });
+
+  const activeTradeFilterRow = activeRules.length + 2;
+  setCell(activeTradeFilterRow, 1, xlsxValueCell(activeTradeFilterRow, 1, ""));
+  setCell(activeTradeFilterRow, 2, xlsxValueCell(activeTradeFilterRow, 2, "Active Trades"));
+  setCell(activeTradeFilterRow, 3, xlsxValueCell(activeTradeFilterRow, 3, 3));
+  setCell(activeTradeFilterRow, 4, xlsxValueCell(activeTradeFilterRow, 4, 1000));
 
   for (let year = 2015 + activeRules.length; year <= 2026; year += 1) {
     const rowNumber = year - 2015 + 2;
