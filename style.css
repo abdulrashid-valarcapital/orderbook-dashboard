@@ -233,8 +233,28 @@ button:disabled {
 
 .filter-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.formula-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #f8fbff;
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.formula-option input {
+  width: 15px;
+  height: 15px;
 }
 
 .filter-rules {

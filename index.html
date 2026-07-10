@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OrderBook Trade Dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260709-black-active-link">
+  <link rel="stylesheet" href="style.css?v=20260710-active-formula-option">
 </head>
 <body>
   <header>
@@ -58,6 +58,10 @@
               <button type="button" id="addFilterRule">+ Add Filter</button>
               <button type="button" id="resetFilterRules">Reset</button>
               <button type="button" id="downloadFilteredOrderbook" disabled>Download Filtered OrderBook</button>
+              <label class="formula-option">
+                <input type="checkbox" id="includeActiveTradesFormula">
+                Active trades formula
+              </label>
               <button type="button" id="downloadFormulaOrderbook" disabled>Download Excel With Formulas</button>
             </div>
           </div>
@@ -205,6 +209,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20260709-black-active-link"></script>
+  <script src="app.js?v=20260710-active-formula-option"></script>
 </body>
 </html>

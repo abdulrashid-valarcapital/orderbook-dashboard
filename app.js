@@ -44,6 +44,7 @@ const els = {
   resetFilterRules: document.getElementById("resetFilterRules"),
   downloadFilteredOrderbook: document.getElementById("downloadFilteredOrderbook"),
   downloadFormulaOrderbook: document.getElementById("downloadFormulaOrderbook"),
+  includeActiveTradesFormula: document.getElementById("includeActiveTradesFormula"),
   generatedAt: document.getElementById("generatedAt"),
   orderBookInput: document.getElementById("orderBookInput"),
   overallInput: document.getElementById("overallInput"),
@@ -1085,7 +1086,9 @@ function downloadFormulaOrderbook() {
   if (!state.trades.length) return;
   const headers = filteredOrderbookHeaders();
   const activeRules = state.filterRules.filter(isActiveFilterRule);
-  const workbook = buildFormulaWorkbookXlsx(headers, activeRules, activeSnoTrades());
+  const workbook = buildFormulaWorkbookXlsx(headers, activeRules, activeSnoTrades(), {
+    includeActiveTrades: Boolean(els.includeActiveTradesFormula && els.includeActiveTradesFormula.checked),
+  });
   const blob = new Blob([workbook], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -1098,10 +1101,10 @@ function downloadFormulaOrderbook() {
   URL.revokeObjectURL(url);
 }
 
-function buildFormulaWorkbookXlsx(headers, activeRules, sourceTrades = state.trades) {
+function buildFormulaWorkbookXlsx(headers, activeRules, sourceTrades = state.trades, options = {}) {
   const filterHeaders = activeRules.map((rule) => filterFieldHeader(rule.field, headers));
-  const orderSheet = buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrades);
-  const sheet1 = buildSummaryXlsxSheet(headers, activeRules, filterHeaders, orderSheet.refs);
+  const orderSheet = buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrades, options);
+  const sheet1 = buildSummaryXlsxSheet(headers, activeRules, filterHeaders, orderSheet.refs, options);
   return zipFiles([
     { name: "[Content_Types].xml", content: contentTypesXml() },
     { name: "_rels/.rels", content: rootRelsXml() },
@@ -1113,24 +1116,29 @@ function buildFormulaWorkbookXlsx(headers, activeRules, sourceTrades = state.tra
   ]);
 }
 
-function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrades = state.trades) {
+function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrades = state.trades, options = {}) {
+  const includeActiveTrades = Boolean(options.includeActiveTrades);
   const helperHeaders = filterHeaders.map((item) => item.header);
   const existingExitYearCol = columnIndex(headers, ["ExitYear"]);
   const addedYearHeaders = existingExitYearCol ? [] : ["ExitYear"];
-  const orderbookHeaders = headers.concat(addedYearHeaders, [""], helperHeaders, ["", "Filter Net", "", "Entry time", "Exit time", "Entries", "Exits", "Active Trade", "Include Active", "", "NET"]);
+  const orderbookHeaders = includeActiveTrades
+    ? headers.concat(addedYearHeaders, [""], helperHeaders, ["", "Filter Net", "", "Entry time", "Exit time", "Entries", "Exits", "Active Trade", "Include Active", "", "NET"])
+    : headers.concat(addedYearHeaders, [""], helperHeaders, ["", "Filter Net", "", "NET"]);
   const separatorCol = headers.length + addedYearHeaders.length + 1;
   const helperStartCol = separatorCol + 1;
   const filterNetCol = helperStartCol + activeRules.length + 1;
-  const activeStartCol = filterNetCol + 2;
-  const activeRefs = {
-    entryTimeCol: activeStartCol,
-    exitTimeCol: activeStartCol + 1,
-    entriesCol: activeStartCol + 2,
-    exitsCol: activeStartCol + 3,
-    activeTradeCol: activeStartCol + 4,
-    includeActiveCol: activeStartCol + 5,
-  };
-  const netCol = activeRefs.includeActiveCol + 2;
+  const activeStartCol = includeActiveTrades ? filterNetCol + 2 : 0;
+  const activeRefs = includeActiveTrades
+    ? {
+        entryTimeCol: activeStartCol,
+        exitTimeCol: activeStartCol + 1,
+        entriesCol: activeStartCol + 2,
+        exitsCol: activeStartCol + 3,
+        activeTradeCol: activeStartCol + 4,
+        includeActiveCol: activeStartCol + 5,
+      }
+    : null;
+  const netCol = includeActiveTrades ? activeRefs.includeActiveCol + 2 : filterNetCol + 2;
   const profitCostCol = profitCostPercentColumnIndex(headers) || columnIndex(headers, ["Profit%"]) || columnIndex(headers, ["Profit"]) || 1;
   const exitYearCol = existingExitYearCol || headers.length + 1;
   const holdingCol = columnIndex(headers, ["HoldingPeriod", "Holding Period"]) || 6;
@@ -1166,14 +1174,18 @@ function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrad
       : "1";
     cells.push(xlsxFormulaCell(rowNumber, filterNetCol, netFormula, "1"));
     cells.push(xlsxValueCell(rowNumber, filterNetCol + 1, ""));
-    cells.push(xlsxFormulaCell(rowNumber, activeRefs.entryTimeCol, xlsxDateTimeFormula(rowNumber, filterNetCol, entryDateCol, entryTimeCol), ""));
-    cells.push(xlsxFormulaCell(rowNumber, activeRefs.exitTimeCol, xlsxDateTimeFormula(rowNumber, filterNetCol, exitDateCol, exitTimeCol), ""));
-    cells.push(xlsxFormulaCell(rowNumber, activeRefs.entriesCol, xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, activeRefs.entryTimeCol, activeRefs.entryTimeCol, lastRow), "0"));
-    cells.push(xlsxFormulaCell(rowNumber, activeRefs.exitsCol, xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, activeRefs.exitTimeCol, activeRefs.entryTimeCol, lastRow), "0"));
-    cells.push(xlsxFormulaCell(rowNumber, activeRefs.activeTradeCol, xlsxAddress(rowNumber, activeRefs.entriesCol) + "-" + xlsxAddress(rowNumber, activeRefs.exitsCol), "0"));
-    cells.push(xlsxFormulaCell(rowNumber, activeRefs.includeActiveCol, "IF(AND(" + xlsxAddress(rowNumber, activeRefs.activeTradeCol) + ">=Sheet1!$C$" + activeTradeFilterRow + "," + xlsxAddress(rowNumber, activeRefs.activeTradeCol) + "<=Sheet1!$D$" + activeTradeFilterRow + "),1,0)", "0"));
-    cells.push(xlsxValueCell(rowNumber, activeRefs.includeActiveCol + 1, ""));
-    cells.push(xlsxFormulaCell(rowNumber, netCol, xlsxAddress(rowNumber, filterNetCol) + "*" + xlsxAddress(rowNumber, activeRefs.includeActiveCol), "1"));
+    if (includeActiveTrades) {
+      cells.push(xlsxFormulaCell(rowNumber, activeRefs.entryTimeCol, xlsxDateTimeFormula(rowNumber, filterNetCol, entryDateCol, entryTimeCol), ""));
+      cells.push(xlsxFormulaCell(rowNumber, activeRefs.exitTimeCol, xlsxDateTimeFormula(rowNumber, filterNetCol, exitDateCol, exitTimeCol), ""));
+      cells.push(xlsxFormulaCell(rowNumber, activeRefs.entriesCol, xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, activeRefs.entryTimeCol, activeRefs.entryTimeCol, lastRow), "0"));
+      cells.push(xlsxFormulaCell(rowNumber, activeRefs.exitsCol, xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, activeRefs.exitTimeCol, activeRefs.entryTimeCol, lastRow), "0"));
+      cells.push(xlsxFormulaCell(rowNumber, activeRefs.activeTradeCol, xlsxAddress(rowNumber, activeRefs.entriesCol) + "-" + xlsxAddress(rowNumber, activeRefs.exitsCol), "0"));
+      cells.push(xlsxFormulaCell(rowNumber, activeRefs.includeActiveCol, "IF(AND(" + xlsxAddress(rowNumber, activeRefs.activeTradeCol) + ">=Sheet1!$C$" + activeTradeFilterRow + "," + xlsxAddress(rowNumber, activeRefs.activeTradeCol) + "<=Sheet1!$D$" + activeTradeFilterRow + "),1,0)", "0"));
+      cells.push(xlsxValueCell(rowNumber, activeRefs.includeActiveCol + 1, ""));
+      cells.push(xlsxFormulaCell(rowNumber, netCol, xlsxAddress(rowNumber, filterNetCol) + "*" + xlsxAddress(rowNumber, activeRefs.includeActiveCol), "1"));
+    } else {
+      cells.push(xlsxFormulaCell(rowNumber, netCol, xlsxAddress(rowNumber, filterNetCol), "1"));
+    }
     rows.push(xlsxRow(rowNumber, cells));
   });
 
@@ -1205,7 +1217,8 @@ function xlsxActiveCountFormula(rowNumber, instrumentCol, snoCol, dateTimeRangeC
   ")";
 }
 
-function buildSummaryXlsxSheet(headers, activeRules, filterHeaders, refs) {
+function buildSummaryXlsxSheet(headers, activeRules, filterHeaders, refs, options = {}) {
+  const includeActiveTrades = Boolean(options.includeActiveTrades);
   const rows = new Map();
   const setCell = (row, col, cell) => {
     if (!rows.has(row)) rows.set(row, new Map());
@@ -1229,11 +1242,13 @@ function buildSummaryXlsxSheet(headers, activeRules, filterHeaders, refs) {
     setCell(rowNumber, 8, xlsxFormulaCell(rowNumber, 8, xlsxYearProfitFormula(rowNumber, refs), "0"));
   });
 
-  const activeTradeFilterRow = activeRules.length + 2;
-  setCell(activeTradeFilterRow, 1, xlsxValueCell(activeTradeFilterRow, 1, ""));
-  setCell(activeTradeFilterRow, 2, xlsxValueCell(activeTradeFilterRow, 2, "Active Trades"));
-  setCell(activeTradeFilterRow, 3, xlsxValueCell(activeTradeFilterRow, 3, 3));
-  setCell(activeTradeFilterRow, 4, xlsxValueCell(activeTradeFilterRow, 4, 1000));
+  if (includeActiveTrades) {
+    const activeTradeFilterRow = activeRules.length + 2;
+    setCell(activeTradeFilterRow, 1, xlsxValueCell(activeTradeFilterRow, 1, ""));
+    setCell(activeTradeFilterRow, 2, xlsxValueCell(activeTradeFilterRow, 2, "Active Trades"));
+    setCell(activeTradeFilterRow, 3, xlsxValueCell(activeTradeFilterRow, 3, 3));
+    setCell(activeTradeFilterRow, 4, xlsxValueCell(activeTradeFilterRow, 4, 1000));
+  }
 
   for (let year = 2015 + activeRules.length; year <= 2026; year += 1) {
     const rowNumber = year - 2015 + 2;
