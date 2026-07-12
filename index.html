@@ -132,6 +132,18 @@
                   <button type="button" id="addIndicator" title="Add indicator" disabled>+</button>
                 </span>
               </label>
+              <label>
+                <span class="label">Indicator Candle</span>
+                <select id="indicatorPeriodSelect" disabled>
+                  <option value="same" selected>Same as Chart</option>
+                  <option value="1">1 Minute</option>
+                  <option value="5">5 Minute</option>
+                  <option value="15">15 Minute</option>
+                  <option value="30">30 Minute</option>
+                  <option value="60">1 Hour</option>
+                  <option value="375">1 Day</option>
+                </select>
+              </label>
             </div>
             <button type="button" id="prevTrade" disabled>Prev</button>
             <span class="trade-count" id="tradeCount">0 / 0</span>
@@ -209,6 +221,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20260710-active-formula-option"></script>
+  <script src="app.js?v=20260712-indicator-timeframe"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ const state = {
   filteredTrades: [],
   candles: [],
   candlePeriod: 5,
+  indicatorPeriod: "same",
   candleRequests: new Set(),
   candleRequestErrors: new Map(),
   candleFetchDisabled: false,
@@ -53,6 +54,7 @@ const els = {
   chartSubtitle: document.getElementById("chartSubtitle"),
   instrumentFilter: document.getElementById("instrumentFilter"),
   candlePeriodSelect: document.getElementById("candlePeriodSelect"),
+  indicatorPeriodSelect: document.getElementById("indicatorPeriodSelect"),
   indicatorSelect: document.getElementById("indicatorSelect"),
   addIndicator: document.getElementById("addIndicator"),
   indicatorChips: document.getElementById("indicatorChips"),
@@ -646,6 +648,7 @@ function populateInstrumentFilter() {
   els.instrumentFilter.value = instruments.includes(current) ? current : "All";
   els.instrumentFilter.disabled = !state.trades.length;
   els.candlePeriodSelect.disabled = !state.trades.length;
+  els.indicatorPeriodSelect.disabled = !state.trades.length;
   els.indicatorSelect.disabled = !state.trades.length;
   updateIndicatorControls();
   els.searchInput.disabled = !state.trades.length;
@@ -2071,6 +2074,7 @@ function showTrade(index) {
 
   const realSeries = realCandlesForTrade(trade);
   const intervalLabel = formatCandlePeriod(state.candlePeriod);
+  const indicatorIntervalLabel = formatCandlePeriod(effectiveIndicatorPeriod());
   const candleStatus = realSeries ? { status: "loaded" } : requestServerCandles(trade);
   const chartMode = realSeries ? intervalLabel + " OHLC full history" : candleStatus.label;
   setChartStatus(trade.instrument + " trade #" + trade.id + " from " + formatDate(trade.entryDate) + " to " + formatDate(trade.exitDate) + " | " + chartMode);
@@ -2083,6 +2087,7 @@ function showTrade(index) {
     ["Holding", formatHolding(trade.entryDate, trade.exitDate)],
     ["Exit Reason", trade.exitReason],
     ["Candle", intervalLabel],
+    ["Indicator Candle", indicatorIntervalLabel],
     ["Window", realSeries ? formatShortDateTime(realSeries.candles[0].time) + " to " + formatShortDateTime(realSeries.candles[realSeries.candles.length - 1].time) : "-"],
     ["Profit", formatPlain(trade.profit, 2)],
     ["Profit Cost %", formatPlain(trade.profitPercent, 2) + "%"],
@@ -2364,10 +2369,27 @@ function drawTradeOverlays(overlays, left, slotWidth, top, height, minPrice, max
 
 function buildIndicatorData(series) {
   if (!state.activeIndicators.length) return [];
-  const warmup = Math.min(series.visibleStart, 220);
-  const start = Math.max(0, series.visibleStart - warmup);
-  const source = series.allCandles.slice(start, series.visibleEnd + 1);
-  const offset = series.visibleStart - start;
+  const indicatorPeriod = effectiveIndicatorPeriod();
+  const chartPeriod = Number(state.candlePeriod) || 5;
+  const indicatorCandles = indicatorPeriod === chartPeriod
+    ? series.allCandles
+    : candlesForInstrument(series.instrument, indicatorPeriod);
+  if (!indicatorCandles.length) {
+    requestServerCandles({ instrument: series.instrument }, indicatorPeriod);
+    return [];
+  }
+  const chartStartTime = series.candles[0].time.getTime();
+  const chartEndTime = series.candles[series.candles.length - 1].time.getTime();
+  const indicatorEnd = latestCandleIndexAtOrBefore(indicatorCandles, chartEndTime);
+  if (indicatorEnd < 0) {
+    requestServerCandles({ instrument: series.instrument }, indicatorPeriod);
+    return [];
+  }
+  const indicatorStartAtWindow = latestCandleIndexAtOrBefore(indicatorCandles, chartStartTime);
+  const warmup = Math.min(Math.max(0, indicatorStartAtWindow), 220);
+  const start = Math.max(0, Math.max(0, indicatorStartAtWindow) - warmup);
+  const source = indicatorCandles.slice(start, indicatorEnd + 1);
+  const alignedIndexes = alignIndicatorSourceIndexes(series.candles, source);
   const closes = source.map((candle) => candle.close);
   const highs = source.map((candle) => candle.high);
   const lows = source.map((candle) => candle.low);
@@ -2376,40 +2398,42 @@ function buildIndicatorData(series) {
   return state.activeIndicators.map((id) => {
     const settings = getIndicatorSettings(id);
     if (id === "sma") {
-      return { id, panel: false, series: [{ label: "SMA " + settings.length, color: settings.color, values: sliceIndicator(sma(closes, settings.length), offset, visibleLength) }] };
+      return { id, period: indicatorPeriod, panel: false, series: [{ label: indicatorLineLabel("SMA " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(sma(closes, settings.length), alignedIndexes, visibleLength) }] };
     }
     if (id === "ema") {
-      return { id, panel: false, series: [{ label: "EMA " + settings.length, color: settings.color, values: sliceIndicator(ema(closes, settings.length), offset, visibleLength) }] };
+      return { id, period: indicatorPeriod, panel: false, series: [{ label: indicatorLineLabel("EMA " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(ema(closes, settings.length), alignedIndexes, visibleLength) }] };
     }
     if (id === "bb") {
       const bb = bollingerBands(closes, settings.length, settings.mult);
       return {
         id,
+        period: indicatorPeriod,
         panel: false,
         fill: true,
         fillColor: settings.fillColor,
         series: [
-          { label: "BB Upper", color: settings.upperColor, values: sliceIndicator(bb.upper, offset, visibleLength) },
-          { label: "BB Mid", color: settings.middleColor, values: sliceIndicator(bb.middle, offset, visibleLength) },
-          { label: "BB Lower", color: settings.lowerColor, values: sliceIndicator(bb.lower, offset, visibleLength) },
+          { label: indicatorLineLabel("BB Upper", indicatorPeriod), color: settings.upperColor, values: alignIndicatorValues(bb.upper, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("BB Mid", indicatorPeriod), color: settings.middleColor, values: alignIndicatorValues(bb.middle, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("BB Lower", indicatorPeriod), color: settings.lowerColor, values: alignIndicatorValues(bb.lower, alignedIndexes, visibleLength) },
         ],
       };
     }
     if (id === "rsi") {
-      return { id, panel: true, min: 0, max: 100, guides: [30, 70], series: [{ label: "RSI " + settings.length, color: settings.color, values: sliceIndicator(rsi(closes, settings.length), offset, visibleLength) }] };
+      return { id, period: indicatorPeriod, panel: true, min: 0, max: 100, guides: [30, 70], series: [{ label: indicatorLineLabel("RSI " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(rsi(closes, settings.length), alignedIndexes, visibleLength) }] };
     }
     if (id === "macd") {
       const macd = macdSeries(closes, settings.fast, settings.slow, settings.signal);
       return {
         id,
+        period: indicatorPeriod,
         panel: true,
         zero: true,
         positiveColor: settings.positiveColor,
         negativeColor: settings.negativeColor,
-        histogram: sliceIndicator(macd.histogram, offset, visibleLength),
+        histogram: alignIndicatorValues(macd.histogram, alignedIndexes, visibleLength),
         series: [
-          { label: "MACD", color: settings.macdColor, values: sliceIndicator(macd.macd, offset, visibleLength) },
-          { label: "Signal", color: settings.signalColor, values: sliceIndicator(macd.signal, offset, visibleLength) },
+          { label: indicatorLineLabel("MACD", indicatorPeriod), color: settings.macdColor, values: alignIndicatorValues(macd.macd, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("Signal", indicatorPeriod), color: settings.signalColor, values: alignIndicatorValues(macd.signal, alignedIndexes, visibleLength) },
         ],
       };
     }
@@ -2417,14 +2441,15 @@ function buildIndicatorData(series) {
       const adx = adxSeries(highs, lows, closes, settings.length);
       return {
         id,
+        period: indicatorPeriod,
         panel: true,
         min: 0,
         max: 100,
         guides: [25],
         series: [
-          { label: "ADX " + settings.length, color: settings.adxColor, values: sliceIndicator(adx.adx, offset, visibleLength) },
-          { label: "+DI", color: settings.plusColor, values: sliceIndicator(adx.plusDi, offset, visibleLength) },
-          { label: "-DI", color: settings.minusColor, values: sliceIndicator(adx.minusDi, offset, visibleLength) },
+          { label: indicatorLineLabel("ADX " + settings.length, indicatorPeriod), color: settings.adxColor, values: alignIndicatorValues(adx.adx, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("+DI", indicatorPeriod), color: settings.plusColor, values: alignIndicatorValues(adx.plusDi, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("-DI", indicatorPeriod), color: settings.minusColor, values: alignIndicatorValues(adx.minusDi, alignedIndexes, visibleLength) },
         ],
       };
     }
@@ -2432,10 +2457,11 @@ function buildIndicatorData(series) {
       const trend = supertrendSeries(highs, lows, closes, settings.atrLength, settings.mult);
       return {
         id,
+        period: indicatorPeriod,
         panel: false,
         series: [
-          { label: "Supertrend Up", color: settings.upColor, values: sliceIndicator(trend.up, offset, visibleLength) },
-          { label: "Supertrend Down", color: settings.downColor, values: sliceIndicator(trend.down, offset, visibleLength) },
+          { label: indicatorLineLabel("Supertrend Up", indicatorPeriod), color: settings.upColor, values: alignIndicatorValues(trend.up, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("Supertrend Down", indicatorPeriod), color: settings.downColor, values: alignIndicatorValues(trend.down, alignedIndexes, visibleLength) },
         ],
       };
     }
@@ -2443,8 +2469,29 @@ function buildIndicatorData(series) {
   }).filter(Boolean);
 }
 
-function sliceIndicator(values, offset, length) {
-  return values.slice(offset, offset + length);
+function alignIndicatorSourceIndexes(chartCandles, sourceCandles) {
+  const indexes = [];
+  let sourceIndex = -1;
+  chartCandles.forEach((candle) => {
+    const time = candle.time.getTime();
+    while (sourceIndex + 1 < sourceCandles.length && sourceCandles[sourceIndex + 1].time.getTime() <= time) {
+      sourceIndex += 1;
+    }
+    indexes.push(sourceIndex);
+  });
+  return indexes;
+}
+
+function alignIndicatorValues(values, sourceIndexes, length) {
+  return Array.from({ length }, (_, index) => {
+    const sourceIndex = sourceIndexes[index];
+    const value = sourceIndex >= 0 ? values[sourceIndex] : null;
+    return Number.isFinite(value) ? value : null;
+  });
+}
+
+function indicatorLineLabel(label, period) {
+  return label + " " + formatCandlePeriod(period);
 }
 
 function drawPriceIndicators(indicators, left, slotWidth, top, height, minPrice, maxPrice) {
@@ -2772,6 +2819,7 @@ function realCandlesForTrade(trade) {
   if (!candles.length) return null;
 
   return {
+    instrument,
     candles,
     allCandles: instrumentCandles,
     visibleStart,
@@ -2785,14 +2833,15 @@ function realCandlesForTrade(trade) {
   };
 }
 
-function candlesForInstrument(instrument) {
-  const key = [instrument, state.candlePeriod, state.candleCacheVersion].join("|");
+function candlesForInstrument(instrument, period = state.candlePeriod) {
+  const normalizedPeriod = Number(period) || 5;
+  const key = [instrument, normalizedPeriod, state.candleCacheVersion].join("|");
   if (state.candleSeriesCache.has(key)) return state.candleSeriesCache.get(key);
 
   const candles = state.candles
     .filter((candle) => (
       (!candle.instrument || normalizeSymbol(candle.instrument) === instrument) &&
-      Number(candle.timeframe || state.candlePeriod) === Number(state.candlePeriod)
+      Number(candle.timeframe || normalizedPeriod) === normalizedPeriod
     ))
     .sort((a, b) => a.time - b.time);
 
@@ -2851,7 +2900,23 @@ function setCandlePeriod(value) {
   state.candleSeriesCache.clear();
 }
 
-function requestServerCandles(trade) {
+function effectiveIndicatorPeriod() {
+  return state.indicatorPeriod === "same" ? state.candlePeriod : Number(state.indicatorPeriod) || state.candlePeriod;
+}
+
+function setIndicatorPeriod(value) {
+  if (value === "same") {
+    state.indicatorPeriod = "same";
+  } else {
+    const nextPeriod = Number(value) || state.candlePeriod;
+    const option = Array.from(els.indicatorPeriodSelect.options).find((item) => Number(item.value) === nextPeriod);
+    state.indicatorPeriod = option ? nextPeriod : "same";
+  }
+  els.indicatorPeriodSelect.value = String(state.indicatorPeriod);
+}
+
+function requestServerCandles(trade, period = state.candlePeriod) {
+  const candlePeriod = Number(period) || 5;
   if (state.candleFetchDisabled) {
     return {
       status: "disabled",
@@ -2861,7 +2926,7 @@ function requestServerCandles(trade) {
   }
 
   const { fromMs, toMs } = fullDataWindowMs();
-  const key = candleRequestKey(trade);
+  const key = candleRequestKey(trade, candlePeriod);
   if (state.candleRequestErrors.has(key)) {
     return {
       status: "error",
@@ -2873,7 +2938,7 @@ function requestServerCandles(trade) {
   if (state.candleRequests.has(key)) {
     return {
       status: "pending",
-      label: "Loading " + formatCandlePeriod(state.candlePeriod) + " candles",
+      label: "Loading " + formatCandlePeriod(candlePeriod) + " candles",
       message: "Reading full " + trade.instrument + " candle history from the candle data store.",
     };
   }
@@ -2881,7 +2946,7 @@ function requestServerCandles(trade) {
   state.candleRequests.add(key);
   const params = new URLSearchParams({
     symbol: trade.instrument,
-    timeframe: String(state.candlePeriod),
+    timeframe: String(candlePeriod),
     fromMs: String(fromMs),
     toMs: String(toMs),
   });
@@ -2904,13 +2969,13 @@ function requestServerCandles(trade) {
         Low: item[3],
         Close: item[4],
         Volume: item[5],
-        Timeframe: payload.timeframe || state.candlePeriod,
+        Timeframe: payload.timeframe || candlePeriod,
       }));
       state.candleRequests.delete(key);
       if (!records.length) {
         state.candleRequestErrors.set(key, "The local price store returned zero candles for this instrument/time window.");
       }
-      state.candles = state.candles.concat(normalizeCandleData(records, payload.timeframe || state.candlePeriod));
+      state.candles = state.candles.concat(normalizeCandleData(records, payload.timeframe || candlePeriod));
       invalidateCandleCaches();
       showTrade(state.activeIndex);
     })
@@ -2926,7 +2991,7 @@ function requestServerCandles(trade) {
 
   return {
     status: "started",
-    label: "Loading " + formatCandlePeriod(state.candlePeriod) + " candles",
+    label: "Loading " + formatCandlePeriod(candlePeriod) + " candles",
     message: "Reading full " + trade.instrument + " candle history from the candle data store.",
   };
 }
@@ -2956,8 +3021,8 @@ function fullDataWindowMs() {
   };
 }
 
-function candleRequestKey(trade) {
-  return [normalizeSymbol(trade.instrument), state.candlePeriod, "full"].join("|");
+function candleRequestKey(trade, period = state.candlePeriod) {
+  return [normalizeSymbol(trade.instrument), Number(period) || 5, "full"].join("|");
 }
 
 function updateChartWindowControls(trade, series) {
@@ -3142,6 +3207,23 @@ function nearestCandleIndex(candles, targetMs) {
   const previousDistance = Math.abs(candles[previous].time.getTime() - targetMs);
   const currentDistance = Math.abs(candles[left].time.getTime() - targetMs);
   return previousDistance <= currentDistance ? previous : left;
+}
+
+function latestCandleIndexAtOrBefore(candles, targetMs) {
+  if (!candles.length || targetMs < candles[0].time.getTime()) return -1;
+  if (targetMs >= candles[candles.length - 1].time.getTime()) return candles.length - 1;
+
+  let left = 0;
+  let right = candles.length - 1;
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    if (candles[mid].time.getTime() <= targetMs) {
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+  return right;
 }
 
 function clamp(value, min, max) {
@@ -3376,6 +3458,10 @@ els.filterRules.addEventListener("input", (event) => {
 });
 els.candlePeriodSelect.addEventListener("change", () => {
   setCandlePeriod(els.candlePeriodSelect.value);
+  showTrade(state.activeIndex);
+});
+els.indicatorPeriodSelect.addEventListener("change", () => {
+  setIndicatorPeriod(els.indicatorPeriodSelect.value);
   showTrade(state.activeIndex);
 });
 els.searchInput.addEventListener("input", applyFilters);
