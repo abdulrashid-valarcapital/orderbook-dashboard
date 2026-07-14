@@ -12,6 +12,7 @@ const PRICE_STORE_CACHE_ROOT = process.env.PRICE_STORE_CACHE_ROOT || path.join(D
 const PRICE_STORE_ZIP_URL = process.env.PRICE_STORE_ZIP_URL || "";
 const PRICE_STORE_ZIP_ID = process.env.PRICE_STORE_ZIP_ID || "";
 const PRICE_STORE_SYMBOL_BASE_URL = process.env.PRICE_STORE_SYMBOL_BASE_URL || "";
+const PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE = process.env.PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE || "";
 const SYMBOL_CANDLE_CACHE_ROOT = process.env.SYMBOL_CANDLE_CACHE_ROOT || path.join(PRICE_STORE_CACHE_ROOT, "symbols");
 const PRICE_STORE_ZIP_CACHE = process.env.PRICE_STORE_ZIP_CACHE || path.join(PRICE_STORE_CACHE_ROOT, "pricestore_snapshot_full.zip");
 const PRICE_STORE_ZIP = process.env.PRICE_STORE_ZIP
@@ -38,8 +39,8 @@ function compactSymbol(value) {
   return normalizeSymbol(value).replace(/[^A-Z0-9]/g, "");
 }
 
-function symbolAssetName(symbol) {
-  return compactSymbol(symbol) + "_5m.json.gz";
+function symbolAssetName(symbol, timeframe) {
+  return compactSymbol(symbol) + "_" + Number(timeframe || 5) + "m.json.gz";
 }
 
 function googleDriveDownloadUrl(value) {
@@ -337,8 +338,21 @@ function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
     return { status: 404, payload: { error: "1m candles are not hosted in the lightweight candle store. Select 5m or higher." } };
   }
 
-  const source = readRemoteSymbolCandles(symbol);
-  if (!source.length) {
+  const directSource = readRemoteSymbolCandles(symbol, timeframe, false);
+  if (directSource && directSource.length) {
+    return {
+      status: 200,
+      payload: {
+        symbol,
+        timeframe,
+        source: "direct-symbol-store",
+        candles: directSource.filter((candle) => candle[0] >= fromMs && candle[0] <= toMs),
+      },
+    };
+  }
+
+  const source = readRemoteSymbolCandles(symbol, 5, true);
+  if (!source || !source.length) {
     return { status: 404, payload: { error: `No hosted 5m candles found for ${symbol}` } };
   }
 
@@ -354,26 +368,60 @@ function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
   };
 }
 
-function readRemoteSymbolCandles(symbol) {
-  const key = compactSymbol(symbol);
+function readRemoteSymbolCandles(symbol, timeframe = 5, required = true) {
+  const key = compactSymbol(symbol) + "|" + Number(timeframe || 5);
   if (cache.symbolCandles.has(key)) return cache.symbolCandles.get(key);
 
-  const filePath = ensureRemoteSymbolFile(symbol);
+  const filePath = ensureRemoteSymbolFile(symbol, timeframe, required);
+  if (!filePath) {
+    cache.symbolCandles.set(key, null);
+    return null;
+  }
   const candles = JSON.parse(zlib.gunzipSync(fs.readFileSync(filePath)).toString("utf8"));
   cache.symbolCandles.set(key, candles);
   return candles;
 }
 
-function ensureRemoteSymbolFile(symbol) {
-  const fileName = symbolAssetName(symbol);
-  const filePath = path.join(SYMBOL_CANDLE_CACHE_ROOT, fileName);
+function ensureRemoteSymbolFile(symbol, timeframe = 5, required = true) {
+  const fileName = symbolAssetName(symbol, timeframe);
+  const filePath = path.join(SYMBOL_CANDLE_CACHE_ROOT, String(Number(timeframe || 5)), fileName);
   if (fs.existsSync(filePath)) return filePath;
 
-  fs.mkdirSync(SYMBOL_CANDLE_CACHE_ROOT, { recursive: true });
-  const base = PRICE_STORE_SYMBOL_BASE_URL.endsWith("/") ? PRICE_STORE_SYMBOL_BASE_URL : PRICE_STORE_SYMBOL_BASE_URL + "/";
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const base = symbolBaseUrl(timeframe);
+  if (!base) {
+    if (required) throw new Error(`No hosted candle base URL configured for ${timeframe}m`);
+    return "";
+  }
   const sourceUrl = base + encodeURIComponent(fileName);
-  downloadRawFile(sourceUrl, filePath);
+  try {
+    downloadRawFile(sourceUrl, filePath);
+  } catch (error) {
+    if (required) throw error;
+    return "";
+  }
   return filePath;
+}
+
+function symbolBaseUrl(timeframe) {
+  const normalizedTimeframe = Number(timeframe || 5);
+  const template = PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE || inferSymbolBaseUrlTemplate();
+  if (template) {
+    const value = template
+      .replace(/\{timeframe\}/g, String(normalizedTimeframe))
+      .replace(/\{tf\}/g, String(normalizedTimeframe));
+    return value.endsWith("/") ? value : value + "/";
+  }
+  if (normalizedTimeframe !== 5) return "";
+  return PRICE_STORE_SYMBOL_BASE_URL.endsWith("/") ? PRICE_STORE_SYMBOL_BASE_URL : PRICE_STORE_SYMBOL_BASE_URL + "/";
+}
+
+function inferSymbolBaseUrlTemplate() {
+  if (!PRICE_STORE_SYMBOL_BASE_URL) return "";
+  if (/candles-5m-v1\/?$/i.test(PRICE_STORE_SYMBOL_BASE_URL)) {
+    return PRICE_STORE_SYMBOL_BASE_URL.replace(/candles-5m-v1\/?$/i, "candles-{timeframe}m-v1/");
+  }
+  return "";
 }
 
 function candleBucketStart(timestampMs, timeframe) {

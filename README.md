@@ -36,12 +36,15 @@ Render environment variables:
 PRICE_STORE_ZIP_ID=<google_drive_file_id>
 PRICE_STORE_CACHE_ROOT=/tmp/priceStoreCache
 PRICE_STORE_SYMBOL_BASE_URL=https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-5m-v1/
+PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE=https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-{timeframe}m-v1/
 ```
 
-For hosted demos, prefer `PRICE_STORE_SYMBOL_BASE_URL`. It points at per-symbol
-5m candle files, so the server downloads only the instrument being charted and
-aggregates 5m candles into 15m, 30m, 1h, and 1day views. The full Google Drive
-zip can remain configured as a fallback, but it is too large for free hosting.
+For hosted demos, prefer `PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE`. It points at
+per-symbol candle files for the selected timeframe, so the server can download
+direct 15m assets when `Candle = 15 Minute` instead of aggregating from 5m. If a
+direct timeframe asset is missing, the server falls back to the 5m symbol store
+and aggregates from there. The full Google Drive zip can remain configured as a
+fallback, but it is too large for free hosting.
 
 Health check:
 

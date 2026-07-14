@@ -14,3 +14,5 @@ services:
         sync: false
       - key: PRICE_STORE_SYMBOL_BASE_URL
         value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-5m-v1/
+      - key: PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE
+        value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-{timeframe}m-v1/
