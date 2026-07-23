@@ -2521,7 +2521,7 @@ function buildIndicatorData(series) {
         id,
         period: indicatorPeriod,
         panel: true,
-        guides: [100],
+        guides: [50, 100],
         series: [
           { label: indicatorLineLabel("RS " + benchmark + " " + settings.lookback, indicatorPeriod), color: settings.color, values: alignIndicatorValues(values, alignedIndexes, visibleLength) },
         ],
