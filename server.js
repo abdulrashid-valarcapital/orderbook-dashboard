@@ -3,6 +3,7 @@ const http = require("http");
 const path = require("path");
 const childProcess = require("child_process");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT || 8765);
@@ -14,7 +15,7 @@ const PRICE_STORE_ZIP_ID = process.env.PRICE_STORE_ZIP_ID || "";
 const PRICE_STORE_SYMBOL_BASE_URL = process.env.PRICE_STORE_SYMBOL_BASE_URL || "";
 const PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE = process.env.PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE || "";
 const PRICE_STORE_375_SYMBOL_BASE_URL = process.env.PRICE_STORE_375_SYMBOL_BASE_URL
-  || "https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-drive-v1/";
+  || "https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-drive-only-v1/";
 const SYMBOL_CANDLE_CACHE_ROOT = process.env.SYMBOL_CANDLE_CACHE_ROOT || path.join(PRICE_STORE_CACHE_ROOT, "symbols");
 const PRICE_STORE_ZIP_CACHE = process.env.PRICE_STORE_ZIP_CACHE || path.join(PRICE_STORE_CACHE_ROOT, "pricestore_snapshot_full.zip");
 const PRICE_STORE_ZIP = process.env.PRICE_STORE_ZIP
@@ -353,6 +354,15 @@ function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
     };
   }
 
+  if (timeframe === 375) {
+    return {
+      status: 404,
+      payload: {
+        error: `No Drive day candle CSV found for ${symbol}. 375/day candles do not fall back to price-store data.`,
+      },
+    };
+  }
+
   const source = readRemoteSymbolCandles(symbol, 5, true);
   if (!source || !source.length) {
     return { status: 404, payload: { error: `No hosted 5m candles found for ${symbol}` } };
@@ -386,15 +396,15 @@ function readRemoteSymbolCandles(symbol, timeframe = 5, required = true) {
 
 function ensureRemoteSymbolFile(symbol, timeframe = 5, required = true) {
   const fileName = symbolAssetName(symbol, timeframe);
-  const filePath = path.join(SYMBOL_CANDLE_CACHE_ROOT, String(Number(timeframe || 5)), fileName);
-  if (fs.existsSync(filePath)) return filePath;
-
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const base = symbolBaseUrl(timeframe);
   if (!base) {
     if (required) throw new Error(`No hosted candle base URL configured for ${timeframe}m`);
     return "";
   }
+  const filePath = path.join(SYMBOL_CANDLE_CACHE_ROOT, symbolCacheDirName(timeframe, base), fileName);
+  if (fs.existsSync(filePath)) return filePath;
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const sourceUrl = base + encodeURIComponent(fileName);
   try {
     downloadRawFile(sourceUrl, filePath);
@@ -403,6 +413,11 @@ function ensureRemoteSymbolFile(symbol, timeframe = 5, required = true) {
     return "";
   }
   return filePath;
+}
+
+function symbolCacheDirName(timeframe, baseUrl) {
+  const versionHash = crypto.createHash("sha1").update(String(baseUrl || "")).digest("hex").slice(0, 10);
+  return String(Number(timeframe || 5)) + "-" + versionHash;
 }
 
 function symbolBaseUrl(timeframe) {
