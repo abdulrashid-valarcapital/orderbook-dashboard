@@ -2168,9 +2168,13 @@ function drawRealCandleTrade(trade, series) {
   const gap = 16;
   const indicatorData = buildIndicatorData(series);
   const panelIndicators = indicatorData.filter((item) => item.panel);
-  const panelH = panelIndicators.length ? Math.max(64, Math.min(86, h * 0.12)) : 0;
-  const panelTotalH = panelIndicators.length ? panelIndicators.length * panelH + panelIndicators.length * 8 : 0;
-  const volumeH = series.candles.some((candle) => candle.volume > 0) ? Math.max(70, h * 0.16) : 0;
+  const panelHeights = panelIndicators.map((indicator) => (
+    indicator.id === "rs"
+      ? Math.max(112, Math.min(150, h * 0.2))
+      : Math.max(64, Math.min(86, h * 0.12))
+  ));
+  const panelTotalH = panelHeights.reduce((total, height) => total + height, 0) + (panelHeights.length ? panelHeights.length * 8 : 0);
+  const volumeH = series.candles.some((candle) => candle.volume > 0) ? Math.max(48, Math.min(72, h * 0.1)) : 0;
   const plotW = w - left - right;
   const plotH = h - top - bottom - volumeH - panelTotalH - (volumeH ? gap : 0);
   const firstPanelTop = top + plotH + 8;
@@ -2246,7 +2250,7 @@ function drawRealCandleTrade(trade, series) {
 
   drawPriceIndicators(indicatorData.filter((item) => !item.panel), left, slotWidth, top, plotH, minPrice, maxPrice);
   drawTradeOverlays(overlays, left, slotWidth, top, plotH, minPrice, maxPrice);
-  drawIndicatorPanels(panelIndicators, left, slotWidth, firstPanelTop, panelH, plotW);
+  drawIndicatorPanels(panelIndicators, left, slotWidth, firstPanelTop, panelHeights, plotW);
   drawTimeLabels(series.candles, left, slotWidth, top + plotH + panelTotalH + (volumeH ? gap + volumeH : 0) + 18);
   drawProfitLabel(trade, tradeColor, entryVisible && exitVisible ? (entryX + exitX) / 2 : left + plotW / 2, top + 8);
   updateChartWindowControls(trade, series);
@@ -2613,12 +2617,14 @@ function drawPriceIndicators(indicators, left, slotWidth, top, height, minPrice,
   });
 }
 
-function drawIndicatorPanels(indicators, left, slotWidth, top, panelHeight, width) {
+function drawIndicatorPanels(indicators, left, slotWidth, top, panelHeights, width) {
+  let panelTop = top;
   indicators.forEach((indicator, panelIndex) => {
-    const panelTop = top + panelIndex * (panelHeight + 8);
+    const panelHeight = panelHeights[panelIndex] || 72;
     const allValues = indicator.series.flatMap((line) => line.values).concat(indicator.histogram || []).filter(Number.isFinite);
-    const rawMin = indicator.min != null ? indicator.min : Math.min(...allValues, 0);
-    const rawMax = indicator.max != null ? indicator.max : Math.max(...allValues, 0);
+    const scaleValues = allValues.concat(indicator.guides || [], indicator.zero ? [0] : []).filter(Number.isFinite);
+    const rawMin = indicator.min != null ? indicator.min : (scaleValues.length ? Math.min(...scaleValues) : 0);
+    const rawMax = indicator.max != null ? indicator.max : (scaleValues.length ? Math.max(...scaleValues) : 0);
     const pad = rawMax === rawMin ? 1 : (rawMax - rawMin) * 0.08;
     const min = indicator.min != null ? indicator.min : rawMin - pad;
     const max = indicator.max != null ? indicator.max : rawMax + pad;
@@ -2635,12 +2641,14 @@ function drawIndicatorPanels(indicators, left, slotWidth, top, panelHeight, widt
     (indicator.guides || []).forEach((guide) => {
       const y = yScale(guide, panelTop, panelHeight, min, max);
       ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = "#cbd5e1";
+      ctx.strokeStyle = indicator.id === "rs" && guide === 100 ? "#111827" : "#cbd5e1";
+      ctx.lineWidth = indicator.id === "rs" && guide === 100 ? 1.2 : 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(left + width, y);
       ctx.stroke();
       ctx.setLineDash([]);
+      ctx.lineWidth = 1;
     });
 
     if (indicator.zero) {
@@ -2664,6 +2672,7 @@ function drawIndicatorPanels(indicators, left, slotWidth, top, panelHeight, widt
     }
 
     indicator.series.forEach((line) => drawIndicatorLine(line.values, left, slotWidth, panelTop, panelHeight, min, max, line.color, 1.4));
+    panelTop += panelHeight + 8;
   });
 }
 
