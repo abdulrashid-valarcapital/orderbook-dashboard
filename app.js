@@ -720,6 +720,7 @@ function indicatorLabel(id) {
     ema: "EMA",
     adx: "ADX",
     supertrend: "Supertrend",
+    rs: "RelativeStrength",
   }[id] || id;
 }
 
@@ -728,6 +729,7 @@ function indicatorChipLabel(id) {
   if (id === "bb") return "BB " + settings.length + " " + settings.mult;
   if (id === "macd") return "MACD " + settings.fast + " " + settings.slow + " " + settings.signal;
   if (id === "supertrend") return "Supertrend " + settings.atrLength + " " + settings.mult;
+  if (id === "rs") return "RS " + settings.benchmark + " " + settings.lookback + " " + settings.anchorMode;
   if (id === "adx" || id === "rsi" || id === "sma" || id === "ema") return indicatorLabel(id) + " " + settings.length;
   return indicatorLabel(id);
 }
@@ -741,6 +743,7 @@ function defaultIndicatorSettings(id) {
     macd: { fast: 12, slow: 26, signal: 9, macdColor: "#246bfe", signalColor: "#ff8a00", positiveColor: "#12805c", negativeColor: "#c7362f" },
     adx: { length: 14, adxColor: "#17202a", plusColor: "#12805c", minusColor: "#c7362f" },
     supertrend: { atrLength: 10, mult: 3, upColor: "#12805c", downColor: "#c7362f" },
+    rs: { benchmark: "NIFTY50", lookback: 25, anchorMode: "low", color: "#0f766e" },
   }[id] || {};
 }
 
@@ -755,6 +758,14 @@ function openIndicatorSettings(id) {
   els.indicatorModalTitle.textContent = indicatorLabel(id) + " Settings";
   els.indicatorSettingsBody.innerHTML = indicatorSettingFields(id).map((field) => {
     const value = settings[field.key];
+    if (field.type === "select") {
+      const options = (field.options || []).map((option) => {
+        const selected = String(option.value) === String(value) ? " selected" : "";
+        return '<option value="' + escapeHtml(option.value) + '"' + selected + '>' + escapeHtml(option.label) + '</option>';
+      }).join("");
+      return '<label><span class="label">' + escapeHtml(field.label) + '</span>' +
+        '<select data-setting="' + escapeHtml(field.key) + '">' + options + '</select></label>';
+    }
     return '<label><span class="label">' + escapeHtml(field.label) + '</span>' +
       '<input type="' + escapeHtml(field.type) + '" data-setting="' + escapeHtml(field.key) + '" value="' + escapeHtml(value) + '"' +
       (field.type === "number" ? ' min="' + escapeHtml(field.min || 1) + '" step="' + escapeHtml(field.step || 1) + '"' : "") +
@@ -824,6 +835,22 @@ function indicatorSettingFields(id) {
       { key: "upColor", label: "Up Trend Color", type: "color" },
       { key: "downColor", label: "Down Trend Color", type: "color" },
     ],
+    rs: [
+      { key: "benchmark", label: "Benchmark Symbol", type: "text" },
+      { key: "lookback", label: "Lookback Candles", type: "number", min: 1 },
+      {
+        key: "anchorMode",
+        label: "Anchor Mode",
+        type: "select",
+        options: [
+          { value: "low", label: "Low Close" },
+          { value: "high", label: "High Close" },
+          { value: "both", label: "Farthest Low/High" },
+          { value: "fixed", label: "Fixed First Candle" },
+        ],
+      },
+      { key: "color", label: "Line Color", type: "color" },
+    ],
   }[id] || [];
 }
 
@@ -832,6 +859,11 @@ function normalizeIndicatorSettings(id, settings) {
     if (typeof settings[key] === "number") settings[key] = Math.max(key === "mult" ? 0.1 : 1, settings[key] || 1);
   });
   if (id === "macd" && settings.fast >= settings.slow) settings.slow = settings.fast + 1;
+  if (id === "rs") {
+    settings.benchmark = String(settings.benchmark || "NIFTY50").trim().toUpperCase() || "NIFTY50";
+    settings.lookback = Math.max(1, Math.round(Number(settings.lookback) || 25));
+    if (!["low", "high", "both", "fixed"].includes(settings.anchorMode)) settings.anchorMode = "low";
+  }
 }
 
 function invalidateCandleCaches() {
@@ -2386,7 +2418,15 @@ function buildIndicatorData(series) {
     return [];
   }
   const indicatorStartAtWindow = latestCandleIndexAtOrBefore(indicatorCandles, chartStartTime);
-  const warmup = Math.min(Math.max(0, indicatorStartAtWindow), 220);
+  const configuredWarmup = Math.max(220, ...state.activeIndicators.map((id) => {
+    const settings = getIndicatorSettings(id);
+    if (id === "rs") return (Number(settings.lookback) || 25) + 5;
+    if (id === "bb" || id === "sma" || id === "ema" || id === "rsi" || id === "adx") return (Number(settings.length) || 14) * 3;
+    if (id === "macd") return (Number(settings.slow) || 26) + (Number(settings.signal) || 9) + 20;
+    if (id === "supertrend") return (Number(settings.atrLength) || 10) * 4;
+    return 0;
+  }));
+  const warmup = Math.min(Math.max(0, indicatorStartAtWindow), configuredWarmup);
   const start = Math.max(0, Math.max(0, indicatorStartAtWindow) - warmup);
   const source = indicatorCandles.slice(start, indicatorEnd + 1);
   const alignedIndexes = alignIndicatorSourceIndexes(series.candles, source);
@@ -2465,8 +2505,78 @@ function buildIndicatorData(series) {
         ],
       };
     }
+    if (id === "rs") {
+      const benchmark = String(settings.benchmark || "NIFTY50").trim().toUpperCase() || "NIFTY50";
+      const benchmarkCandles = candlesForInstrument(benchmark, indicatorPeriod);
+      if (!benchmarkCandles.length) {
+        requestServerCandles({ instrument: benchmark }, indicatorPeriod);
+        return null;
+      }
+      const values = relativeStrengthValues(source, benchmarkCandles, settings.lookback, settings.anchorMode);
+      return {
+        id,
+        period: indicatorPeriod,
+        panel: true,
+        guides: [100],
+        series: [
+          { label: indicatorLineLabel("RS " + benchmark + " " + settings.lookback, indicatorPeriod), color: settings.color, values: alignIndicatorValues(values, alignedIndexes, visibleLength) },
+        ],
+      };
+    }
     return null;
   }).filter(Boolean);
+}
+
+function relativeStrengthValues(stockCandles, benchmarkCandles, lookback, anchorMode) {
+  const period = Math.max(1, Math.round(Number(lookback) || 25));
+  const mode = ["low", "high", "both", "fixed"].includes(anchorMode) ? anchorMode : "low";
+  const stockByTime = new Map(stockCandles.map((candle) => [candle.time.getTime(), candle]));
+  const benchmarkByTime = new Map(benchmarkCandles.map((candle) => [candle.time.getTime(), candle]));
+
+  return stockCandles.map((stockCandle) => {
+    const currentTime = stockCandle.time.getTime();
+    const currentBenchmark = benchmarkByTime.get(currentTime);
+    if (!currentBenchmark) return null;
+
+    const anchor = relativeStrengthAnchor(benchmarkCandles, currentTime, period, mode);
+    if (!anchor) return null;
+
+    const anchorStock = stockByTime.get(anchor.time.getTime());
+    if (!anchorStock) return null;
+
+    const anchorStockClose = Number(anchorStock.close);
+    const anchorBenchmarkClose = Number(anchor.close);
+    const currentStockClose = Number(stockCandle.close);
+    const currentBenchmarkClose = Number(currentBenchmark.close);
+    if (anchorStockClose <= 0 || anchorBenchmarkClose <= 0 || currentStockClose <= 0 || currentBenchmarkClose <= 0) return null;
+
+    const anchorRatio = anchorStockClose / anchorBenchmarkClose;
+    const currentRatio = currentStockClose / currentBenchmarkClose;
+    return (currentRatio / anchorRatio) * 100;
+  });
+}
+
+function relativeStrengthAnchor(benchmarkCandles, currentTime, lookback, mode) {
+  const currentIndex = latestCandleIndexAtOrBefore(benchmarkCandles, currentTime);
+  if (currentIndex <= 0) return null;
+  const exactCurrent = benchmarkCandles[currentIndex].time.getTime() === currentTime;
+  const endIndex = exactCurrent ? currentIndex - 1 : currentIndex;
+  const startIndex = Math.max(0, endIndex - lookback + 1);
+  const eligible = benchmarkCandles.slice(startIndex, endIndex + 1).filter((candle) => Number(candle.close) > 0);
+  if (!eligible.length) return null;
+
+  if (mode === "fixed") return eligible[0];
+  let low = eligible[0];
+  let high = eligible[0];
+  eligible.forEach((candle) => {
+    if (Number(candle.close) < Number(low.close)) low = candle;
+    if (Number(candle.close) > Number(high.close)) high = candle;
+  });
+  if (mode === "high") return high;
+  if (mode === "both") {
+    return low.time.getTime() <= high.time.getTime() ? low : high;
+  }
+  return low;
 }
 
 function alignIndicatorSourceIndexes(chartCandles, sourceCandles) {
@@ -2835,12 +2945,13 @@ function realCandlesForTrade(trade) {
 
 function candlesForInstrument(instrument, period = state.candlePeriod) {
   const normalizedPeriod = Number(period) || 5;
-  const key = [instrument, normalizedPeriod, state.candleCacheVersion].join("|");
+  const normalizedInstrument = normalizeSymbol(instrument);
+  const key = [normalizedInstrument, normalizedPeriod, state.candleCacheVersion].join("|");
   if (state.candleSeriesCache.has(key)) return state.candleSeriesCache.get(key);
 
   const candles = state.candles
     .filter((candle) => (
-      (!candle.instrument || normalizeSymbol(candle.instrument) === instrument) &&
+      (!candle.instrument || normalizeSymbol(candle.instrument) === normalizedInstrument) &&
       Number(candle.timeframe || normalizedPeriod) === normalizedPeriod
     ))
     .sort((a, b) => a.time - b.time);
