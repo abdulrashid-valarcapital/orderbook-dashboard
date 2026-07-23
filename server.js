@@ -15,7 +15,7 @@ const PRICE_STORE_ZIP_ID = process.env.PRICE_STORE_ZIP_ID || "";
 const PRICE_STORE_SYMBOL_BASE_URL = process.env.PRICE_STORE_SYMBOL_BASE_URL || "";
 const PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE = process.env.PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE || "";
 const PRICE_STORE_375_SYMBOL_BASE_URL = process.env.PRICE_STORE_375_SYMBOL_BASE_URL
-  || "https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-drive-only-v1/";
+  || "https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-atr2-v1/";
 const SYMBOL_CANDLE_CACHE_ROOT = process.env.SYMBOL_CANDLE_CACHE_ROOT || path.join(PRICE_STORE_CACHE_ROOT, "symbols");
 const PRICE_STORE_ZIP_CACHE = process.env.PRICE_STORE_ZIP_CACHE || path.join(PRICE_STORE_CACHE_ROOT, "pricestore_snapshot_full.zip");
 const PRICE_STORE_ZIP = process.env.PRICE_STORE_ZIP

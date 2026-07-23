@@ -17,4 +17,4 @@ services:
       - key: PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE
         value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-{timeframe}m-v1/
       - key: PRICE_STORE_375_SYMBOL_BASE_URL
-        value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-drive-only-v1/
+        value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-atr2-v1/
