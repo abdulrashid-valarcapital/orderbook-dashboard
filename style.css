@@ -299,24 +299,34 @@ button:disabled {
   border-left: 1px solid var(--line);
   padding-left: 14px;
   display: grid;
-  gap: 10px;
+  gap: 7px;
+  align-content: start;
+}
+
+.year-distribution h2 {
+  font-size: 14px;
+}
+
+.year-distribution .subtle {
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .year-table {
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  max-height: 330px;
-  overflow-y: auto;
 }
 
 .year-table table {
   min-width: 0;
+  font-size: 11px;
 }
 
 .year-table th,
 .year-table td {
-  padding: 7px 9px;
+  padding: 4px 7px;
+  line-height: 1.2;
 }
 
 .year-table td:first-child,
