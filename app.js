@@ -88,6 +88,7 @@ const baseFilterFields = [
   { key: "instrument", label: "Instrument", type: "text" },
   { key: "type", label: "Type", type: "text" },
   { key: "entryTime", label: "Entry Time", type: "time" },
+  { key: "entryYear", label: "Entry Year", type: "number" },
   { key: "exitTime", label: "Exit Time", type: "time" },
   { key: "exitYear", label: "Exit Year", type: "number" },
   { key: "holdingDays", label: "Holding Days", type: "number" },
@@ -279,7 +280,8 @@ function normalizeOrderBook(records) {
       dayAtrPercent: toNumber(row["DayATR%"]),
       dayAtrPercentile: toNumber(row["DayATR%ile"]),
       holdingDays: holdingPeriod || (holdingMinutes ? holdingMinutes / 1440 : (entryDate && exitDate ? (exitDate - entryDate) / 86400000 : 0)),
-      exitYear: toNumber(row.ExitYear) || (exitDate ? exitDate.getFullYear() : 0),
+      entryYear: toNumber(getField(row, ["EntryYear", "Entry Year"])) || (entryDate ? entryDate.getFullYear() : 0),
+      exitYear: toNumber(getField(row, ["ExitYear", "Exit Year"])) || (exitDate ? exitDate.getFullYear() : 0),
       stockDayOpen: toNumber(row.stockDayOpen),
       stockDayLow: toNumber(row.stockDayLow),
       niftyEntry: toNumber(row.niftyEntryTick),
@@ -416,8 +418,9 @@ function filterHeaderAliases(field) {
     instrument: ["Instrument"],
     type: ["Type"],
     entryTime: ["EntryTime"],
+    entryYear: ["EntryYear", "Entry Year"],
     exitTime: ["ExitTime"],
-    exitYear: ["ExitYear"],
+    exitYear: ["ExitYear", "Exit Year"],
     holdingDays: ["HoldingPeriod", "Holding Period"],
     profit: ["Profit"],
     profitPercent: ["ProfitCost%", "Profit%Cost", "Profit Cost %", "Profit%"],
@@ -1033,6 +1036,7 @@ function tradeFilterValue(trade, field) {
   if (field === "instrument") return trade.instrument;
   if (field === "type") return trade.type;
   if (field === "entryTime") return minutesOfDay(trade.entryDate);
+  if (field === "entryYear") return trade.entryYear;
   if (field === "exitTime") return minutesOfDay(trade.exitDate);
   if (field === "exitYear") return trade.exitYear;
   if (field === "holdingDays") return trade.holdingDays;
@@ -1137,7 +1141,8 @@ function downloadFormulaOrderbook() {
 }
 
 function buildFormulaWorkbookXlsx(headers, activeRules, sourceTrades = state.trades, options = {}) {
-  const filterHeaders = activeRules.map((rule) => filterFieldHeader(rule.field, headers));
+  const headersWithComputedYear = headers.concat(columnIndex(headers, ["EntryYear", "Entry Year"]) ? [] : ["EntryYear"]);
+  const filterHeaders = activeRules.map((rule) => filterFieldHeader(rule.field, headersWithComputedYear));
   const orderSheet = buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrades, options);
   const sheet1 = buildSummaryXlsxSheet(headers, activeRules, filterHeaders, orderSheet.refs, options);
   return zipFiles([
@@ -1154,8 +1159,8 @@ function buildFormulaWorkbookXlsx(headers, activeRules, sourceTrades = state.tra
 function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrades = state.trades, options = {}) {
   const includeActiveTrades = Boolean(options.includeActiveTrades);
   const helperHeaders = filterHeaders.map((item) => item.header);
-  const existingExitYearCol = columnIndex(headers, ["ExitYear"]);
-  const addedYearHeaders = existingExitYearCol ? [] : ["ExitYear"];
+  const existingEntryYearCol = columnIndex(headers, ["EntryYear", "Entry Year"]);
+  const addedYearHeaders = existingEntryYearCol ? [] : ["EntryYear"];
   const orderbookHeaders = includeActiveTrades
     ? headers.concat(addedYearHeaders, [""], helperHeaders, ["", "Filter Net", "", "Entry time", "Exit time", "Entries", "Exits", "Active Trade", "Include Active", "", "NET"])
     : headers.concat(addedYearHeaders, [""], helperHeaders, ["", "Filter Net", "", "NET"]);
@@ -1175,7 +1180,7 @@ function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrad
     : null;
   const netCol = includeActiveTrades ? activeRefs.includeActiveCol + 2 : filterNetCol + 2;
   const profitCostCol = profitCostPercentColumnIndex(headers) || columnIndex(headers, ["Profit%"]) || columnIndex(headers, ["Profit"]) || 1;
-  const exitYearCol = existingExitYearCol || headers.length + 1;
+  const entryYearCol = existingEntryYearCol || headers.length + 1;
   const holdingCol = columnIndex(headers, ["HoldingPeriod", "Holding Period"]) || 6;
   const instrumentCol = columnIndex(headers, ["Instrument", "Symbol"]) || 2;
   const snoCol = columnIndex(headers, ["SSU", "SNO", "SNo", "S.No", "SsuId", "SSUID", "SsuID", "Ssu Id"]) || 1;
@@ -1195,8 +1200,8 @@ function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrad
     const cells = headers.map((header, colIndex) => (
       xlsxValueCell(rowNumber, colIndex + 1, raw[header] !== undefined ? raw[header] : fallbackOrderbookValue(trade, header), header)
     ));
-    if (!existingExitYearCol) {
-      cells.push(xlsxValueCell(rowNumber, headers.length + 1, trade.exitYear || (trade.exitDate ? trade.exitDate.getFullYear() : ""), "ExitYear"));
+    if (!existingEntryYearCol) {
+      cells.push(xlsxValueCell(rowNumber, headers.length + 1, trade.entryYear || (trade.entryDate ? trade.entryDate.getFullYear() : ""), "EntryYear"));
     }
     cells.push(xlsxValueCell(rowNumber, separatorCol, ""));
     activeRules.forEach((rule, ruleIndex) => {
@@ -1230,7 +1235,7 @@ function buildOrderBookXlsxSheet(headers, activeRules, filterHeaders, sourceTrad
       netCol,
       filterNetCol,
       profitCostCol,
-      exitYearCol,
+      entryYearCol,
       holdingCol,
     },
     xml: xlsxWorksheetXml(rows.join("")),
@@ -1348,11 +1353,11 @@ function xlsxFilterRuleFormula(rule, sourceCol, sheetRow, rowNumber) {
 }
 
 function xlsxYearTradesFormula(rowNumber, refs) {
-  return "COUNTIFS(OrderBook!" + xlsxRange(2, refs.exitYearCol, refs.lastRow, refs.exitYearCol) + ",F" + rowNumber + ",OrderBook!" + xlsxRange(2, refs.netCol, refs.lastRow, refs.netCol) + ",1)";
+  return "COUNTIFS(OrderBook!" + xlsxRange(2, refs.entryYearCol, refs.lastRow, refs.entryYearCol) + ",F" + rowNumber + ",OrderBook!" + xlsxRange(2, refs.netCol, refs.lastRow, refs.netCol) + ",1)";
 }
 
 function xlsxYearProfitFormula(rowNumber, refs) {
-  return "SUMIFS(OrderBook!" + xlsxRange(2, refs.profitCostCol, refs.lastRow, refs.profitCostCol) + ",OrderBook!" + xlsxRange(2, refs.netCol, refs.lastRow, refs.netCol) + ",1,OrderBook!" + xlsxRange(2, refs.exitYearCol, refs.lastRow, refs.exitYearCol) + ",F" + rowNumber + ")";
+  return "SUMIFS(OrderBook!" + xlsxRange(2, refs.profitCostCol, refs.lastRow, refs.profitCostCol) + ",OrderBook!" + xlsxRange(2, refs.netCol, refs.lastRow, refs.netCol) + ",1,OrderBook!" + xlsxRange(2, refs.entryYearCol, refs.lastRow, refs.entryYearCol) + ",F" + rowNumber + ")";
 }
 
 function xlsxWorksheetXml(rowsXml) {
@@ -1548,17 +1553,18 @@ function crc32(data) {
 }
 
 function buildFormulaWorkbookXml(headers, activeRules) {
-  const filterHeaders = activeRules.map((rule) => filterFieldHeader(rule.field, headers));
+  const headersWithComputedYear = headers.concat(columnIndex(headers, ["EntryYear", "Entry Year"]) ? [] : ["EntryYear"]);
+  const filterHeaders = activeRules.map((rule) => filterFieldHeader(rule.field, headersWithComputedYear));
   const helperHeaders = filterHeaders.map((item) => item.header);
-  const existingExitYearCol = columnIndex(headers, ["ExitYear"]);
-  const addedYearHeaders = existingExitYearCol ? [] : ["ExitYear"];
+  const existingEntryYearCol = columnIndex(headers, ["EntryYear", "Entry Year"]);
+  const addedYearHeaders = existingEntryYearCol ? [] : ["EntryYear"];
   const orderbookHeaders = headers.concat(addedYearHeaders, [""], helperHeaders, ["", "NET"]);
   const separatorCol = headers.length + addedYearHeaders.length + 1;
   const helperStartCol = separatorCol + 1;
   const netCol = orderbookHeaders.length;
   const lastRow = state.trades.length + 1;
   const profitCostCol = profitCostPercentColumnIndex(headers) || columnIndex(headers, ["Profit%"]) || columnIndex(headers, ["Profit"]) || 1;
-  const exitYearCol = existingExitYearCol || headers.length + 1;
+  const entryYearCol = existingEntryYearCol || headers.length + 1;
   const holdingCol = columnIndex(headers, ["HoldingPeriod", "Holding Period"]) || 6;
   const orderRows = [
     orderbookHeaders.map((header) => excelValueCell(header)),
@@ -1568,8 +1574,8 @@ function buildFormulaWorkbookXml(headers, activeRules) {
     const excelRow = index + 2;
     const raw = trade.raw || {};
     const cells = headers.map((header) => excelValueCell(raw[header] !== undefined ? raw[header] : fallbackOrderbookValue(trade, header), header));
-    if (!existingExitYearCol) {
-      cells.push(excelValueCell(trade.exitYear || (trade.exitDate ? trade.exitDate.getFullYear() : ""), "ExitYear"));
+    if (!existingEntryYearCol) {
+      cells.push(excelValueCell(trade.entryYear || (trade.entryDate ? trade.entryDate.getFullYear() : ""), "EntryYear"));
     }
     cells.push(excelValueCell(""));
     activeRules.forEach((rule, ruleIndex) => {
@@ -1590,7 +1596,7 @@ function buildFormulaWorkbookXml(headers, activeRules) {
     lastRow,
     netCol,
     profitCostCol,
-    exitYearCol,
+    entryYearCol,
     holdingCol,
   });
 
@@ -1678,11 +1684,11 @@ function filterRuleFormula(rule, sourceCol, sheetRow) {
 }
 
 function yearTradesFormula(sheetRow, refs) {
-  return "=COUNTIFS(OrderBook!R2C" + refs.exitYearCol + ":R" + refs.lastRow + "C" + refs.exitYearCol + ",RC[-1],OrderBook!R2C" + refs.netCol + ":R" + refs.lastRow + "C" + refs.netCol + ",1)";
+  return "=COUNTIFS(OrderBook!R2C" + refs.entryYearCol + ":R" + refs.lastRow + "C" + refs.entryYearCol + ",RC[-1],OrderBook!R2C" + refs.netCol + ":R" + refs.lastRow + "C" + refs.netCol + ",1)";
 }
 
 function yearProfitFormula(sheetRow, refs) {
-  return "=SUMIFS(OrderBook!R2C" + refs.profitCostCol + ":R" + refs.lastRow + "C" + refs.profitCostCol + ",OrderBook!R2C" + refs.netCol + ":R" + refs.lastRow + "C" + refs.netCol + ",1,OrderBook!R2C" + refs.exitYearCol + ":R" + refs.lastRow + "C" + refs.exitYearCol + ",RC[-2])";
+  return "=SUMIFS(OrderBook!R2C" + refs.profitCostCol + ":R" + refs.lastRow + "C" + refs.profitCostCol + ",OrderBook!R2C" + refs.netCol + ":R" + refs.lastRow + "C" + refs.netCol + ",1,OrderBook!R2C" + refs.entryYearCol + ":R" + refs.lastRow + "C" + refs.entryYearCol + ",RC[-2])";
 }
 
 function filterFieldHeader(field, headers) {
@@ -1889,7 +1895,7 @@ function topInstrumentSummary(trades) {
 function bestYearSummary(trades) {
   const groups = new Map();
   trades.forEach((trade) => {
-    const year = trade.exitYear || (trade.exitDate ? trade.exitDate.getFullYear() : "-");
+    const year = tradeEntryYear(trade);
     groups.set(year, (groups.get(year) || 0) + trade.profitPercent);
   });
   const [year, profit] = Array.from(groups.entries()).sort((a, b) => b[1] - a[1])[0] || ["-", 0];
@@ -1897,6 +1903,10 @@ function bestYearSummary(trades) {
     label: String(year),
     note: formatPlain(profit, 2) + "% cost contribution.",
   };
+}
+
+function tradeEntryYear(trade) {
+  return trade.entryYear || (trade.entryDate ? trade.entryDate.getFullYear() : "-");
 }
 
 function renderYearDistribution() {
@@ -1908,7 +1918,7 @@ function renderYearDistribution() {
 
   const groups = new Map();
   state.filteredTrades.forEach((trade) => {
-    const year = trade.exitYear || (trade.exitDate ? trade.exitDate.getFullYear() : "-");
+    const year = tradeEntryYear(trade);
     if (!groups.has(year)) groups.set(year, { year, trades: 0, profit: 0 });
     const item = groups.get(year);
     item.trades += 1;
