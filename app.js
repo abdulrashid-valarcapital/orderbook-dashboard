@@ -3458,10 +3458,9 @@ function fitCanvas(shouldRedraw = true) {
 
 function formatHolding(start, end) {
   const minutes = Math.max(0, Math.round((end - start) / 60000));
-  if (minutes < 60) return minutes + " min";
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return hours + "h " + rest + "m";
+  const days = minutes / 1440;
+  if (Number.isInteger(days)) return days + (days === 1 ? " day" : " days");
+  return formatPlain(days, 2) + " days";
 }
 
 function escapeHtml(value) {
