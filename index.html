@@ -36,9 +36,13 @@
       <div class="upload-box">
         <strong>SNO Filter</strong>
         <span class="subtle">Select one SNO to show its trades, stats, chart, filter dashboard, and downloads.</span>
-        <select id="snoSelect" disabled>
-          <option value="All">Upload OrderBook first</option>
-        </select>
+        <div class="sno-control-row">
+          <button type="button" id="prevSno" disabled>Prev SNO</button>
+          <select id="snoSelect" disabled>
+            <option value="All">Upload OrderBook first</option>
+          </select>
+          <button type="button" id="nextSno" disabled>Next SNO</button>
+        </div>
       </div>
     </section>
 

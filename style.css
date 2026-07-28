@@ -109,6 +109,18 @@ main { padding: 20px 28px 32px; }
   font-size: 14px;
 }
 
+.sno-control-row {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.sno-control-row button {
+  white-space: nowrap;
+  padding: 8px 10px;
+}
+
 input[type="file"], select, input[type="search"], input[type="number"], input[type="text"], input[type="time"] {
   width: 100%;
   border: 1px solid var(--line-strong);
@@ -821,4 +833,5 @@ tr:hover, tr.active {
 
 @media (max-width: 620px) {
   .upload-panel, .stats { grid-template-columns: 1fr; }
+  .sno-control-row { grid-template-columns: 1fr; }
 }

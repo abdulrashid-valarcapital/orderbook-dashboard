@@ -36,6 +36,8 @@ const els = {
   filterOrderbookTab: document.getElementById("filterOrderbookTab"),
   uploadPanel: document.getElementById("uploadPanel"),
   snoSelect: document.getElementById("snoSelect"),
+  prevSno: document.getElementById("prevSno"),
+  nextSno: document.getElementById("nextSno"),
   filterDashboard: document.getElementById("filterDashboard"),
   filterRules: document.getElementById("filterRules"),
   filterStatus: document.getElementById("filterStatus"),
@@ -671,26 +673,62 @@ function uniqueSnos() {
   });
 }
 
-function populateSnoSelect() {
+function snoOptions() {
   const snos = uniqueSnos();
+  return snos.length ? ["All"].concat(snos) : [];
+}
+
+function populateSnoSelect() {
+  const options = snoOptions();
   if (!els.snoSelect) return;
-  if (!snos.length) {
+  if (!options.length) {
     state.selectedSno = "All";
     els.snoSelect.innerHTML = '<option value="All">Upload OrderBook first</option>';
     els.snoSelect.disabled = true;
+    updateSnoNavigation();
     return;
   }
 
-  if (state.selectedSno !== "All" && !snos.includes(state.selectedSno)) {
+  if (!options.includes(state.selectedSno)) {
     state.selectedSno = "All";
   }
 
-  const options = ["All"].concat(snos);
   els.snoSelect.innerHTML = options.map((sno) => (
     '<option value="' + escapeHtml(sno) + '">' + escapeHtml(sno === "All" ? "All SNO" : "SNO " + sno) + '</option>'
   )).join("");
   els.snoSelect.value = state.selectedSno;
   els.snoSelect.disabled = false;
+  updateSnoNavigation();
+}
+
+function updateSnoNavigation() {
+  const options = snoOptions();
+  const index = options.indexOf(state.selectedSno);
+  const disabled = !options.length;
+  if (els.prevSno) els.prevSno.disabled = disabled || index <= 0;
+  if (els.nextSno) els.nextSno.disabled = disabled || index < 0 || index >= options.length - 1;
+}
+
+function setSelectedSno(sno) {
+  const options = snoOptions();
+  state.selectedSno = options.includes(sno) ? sno : "All";
+  if (els.snoSelect) els.snoSelect.value = state.selectedSno;
+  els.instrumentFilter.value = "All";
+  els.searchInput.value = "";
+  state.orderbookView = "trade";
+  state.chartWindowStartByTrade.clear();
+  updateSnoNavigation();
+  populateInstrumentFilter();
+  applyFilters();
+}
+
+function moveSelectedSno(direction) {
+  const options = snoOptions();
+  if (!options.length) return;
+  const currentIndex = Math.max(0, options.indexOf(state.selectedSno));
+  const nextIndex = clamp(currentIndex + direction, 0, options.length - 1);
+  if (nextIndex === currentIndex) return;
+  setSelectedSno(options[nextIndex]);
 }
 
 function updateIndicatorControls() {
@@ -3544,14 +3582,10 @@ els.overallInput.addEventListener("change", async (event) => {
 
 els.instrumentFilter.addEventListener("change", applyFilters);
 els.snoSelect.addEventListener("change", () => {
-  state.selectedSno = els.snoSelect.value;
-  els.instrumentFilter.value = "All";
-  els.searchInput.value = "";
-  state.orderbookView = "trade";
-  state.chartWindowStartByTrade.clear();
-  populateInstrumentFilter();
-  applyFilters();
+  setSelectedSno(els.snoSelect.value);
 });
+els.prevSno.addEventListener("click", () => moveSelectedSno(-1));
+els.nextSno.addEventListener("click", () => moveSelectedSno(1));
 els.orderbookDashboardTab.addEventListener("click", () => switchDashboardMode("orderbook"));
 els.filterOrderbookTab.addEventListener("click", () => switchDashboardMode("filter"));
 els.addFilterRule.addEventListener("click", () => {
