@@ -286,8 +286,8 @@ function normalizeOrderBook(records) {
       exitYear: toNumber(getField(row, ["ExitYear", "Exit Year"])) || (exitDate ? exitDate.getFullYear() : 0),
       stockDayOpen: toNumber(row.stockDayOpen),
       stockDayLow: toNumber(row.stockDayLow),
-      niftyEntry: toNumber(row.niftyEntryTick),
-      niftyExit: toNumber(row.currentNiftyTickClose),
+      niftyEntry: toNumber(getField(row, ["niftyEntryTick", "NiftyEntryTick", "NiftyEntry", "EntryNifty", "Nifty Entry"])),
+      niftyExit: toNumber(getField(row, ["currentNiftyTickClose", "niftyExitTick", "NiftyExitTick", "NiftyExit", "ExitNifty", "Nifty Exit"])),
       raw: row,
     };
   }).filter((trade) => trade.entryDate && trade.exitDate && trade.entryPrice && trade.exitPrice);
@@ -2214,6 +2214,10 @@ function drawRealCandleTrade(trade, series) {
   const top = 24;
   const bottom = 64;
   const gap = 16;
+  const niftySeries = benchmarkSeriesForVisibleWindow(series, "NIFTY50");
+  const niftyBlockH = Math.min(250, Math.max(210, h * 0.28));
+  const niftyGap = niftySeries ? 38 : 0;
+  const reservedNiftyH = niftySeries ? niftyBlockH + niftyGap : 0;
   const indicatorData = buildIndicatorData(series);
   const panelIndicators = indicatorData.filter((item) => item.panel);
   const panelHeights = panelIndicators.map((indicator) => (
@@ -2224,7 +2228,7 @@ function drawRealCandleTrade(trade, series) {
   const panelTotalH = panelHeights.reduce((total, height) => total + height, 0) + (panelHeights.length ? panelHeights.length * 8 : 0);
   const volumeH = series.candles.some((candle) => candle.volume > 0) ? Math.max(48, Math.min(72, h * 0.1)) : 0;
   const plotW = w - left - right;
-  const plotH = h - top - bottom - volumeH - panelTotalH - (volumeH ? gap : 0);
+  const plotH = Math.max(150, h - top - bottom - reservedNiftyH - volumeH - panelTotalH - (volumeH ? gap : 0));
   const firstPanelTop = top + plotH + 8;
   const volumeTop = top + plotH + panelTotalH + (volumeH ? gap : 0);
   const overlays = visibleTradeOverlays(trade, series);
@@ -2250,7 +2254,20 @@ function drawRealCandleTrade(trade, series) {
   const maxPrice = rawMax + pad;
   const slotWidth = plotW / Math.max(1, series.candles.length);
   const candleWidth = Math.max(4, Math.min(14, slotWidth * 0.62));
-  state.chartHover = { candles: series.candles, indicators: indicatorData, overlays, left, right: left + plotW, top, bottom: volumeH ? volumeTop + volumeH : top + plotH + panelTotalH, slotWidth };
+  const mainHoverBottom = volumeH ? volumeTop + volumeH : top + plotH + panelTotalH;
+  state.chartHover = {
+    panes: [{
+      name: series.instrument,
+      candles: series.candles,
+      indicators: indicatorData,
+      overlays,
+      left,
+      right: left + plotW,
+      top,
+      bottom: mainHoverBottom,
+      slotWidth,
+    }],
+  };
   const entryX = entryVisible ? candleX(activeOverlay.entryIndex, left, slotWidth) : null;
   const exitX = exitVisible ? candleX(activeOverlay.exitIndex, left, slotWidth) : null;
   const yEntry = yScale(trade.entryPrice, top, plotH, minPrice, maxPrice);
@@ -2301,6 +2318,11 @@ function drawRealCandleTrade(trade, series) {
   drawIndicatorPanels(panelIndicators, left, slotWidth, firstPanelTop, panelHeights, plotW);
   drawTimeLabels(series.candles, left, slotWidth, top + plotH + panelTotalH + (volumeH ? gap + volumeH : 0) + 18);
   drawProfitLabel(trade, tradeColor, entryVisible && exitVisible ? (entryX + exitX) / 2 : left + plotW / 2, top + 8);
+
+  if (niftySeries) {
+    drawBenchmarkPanel(trade, niftySeries, left, plotW, slotWidth, h - bottom - niftyBlockH + 12, niftyBlockH, candleWidth);
+  }
+
   updateChartWindowControls(trade, series);
 }
 
@@ -2334,6 +2356,200 @@ function drawMissingCandles(trade, candleStatus) {
   ctx.font = "700 13px system-ui, sans-serif";
   ctx.fillText("No fallback candles are drawn here because they are not valid " + formatCandlePeriod(state.candlePeriod) + " market candles.", w / 2, h / 2 + 48);
   disableChartWindowControls("Waiting for full candle data.");
+}
+
+function benchmarkSeriesForVisibleWindow(series, instrument) {
+  const symbol = normalizeSymbol(instrument);
+  const benchmarkCandles = candlesForInstrument(symbol);
+  if (!benchmarkCandles.length) {
+    const status = requestServerCandles({ instrument: symbol }, state.candlePeriod);
+    return {
+      instrument: symbol,
+      candles: [],
+      sourceCandles: series.candles,
+      status: status.status === "pending" || status.status === "started" ? "loading" : "missing",
+      message: status.message || status.label || "Waiting for " + symbol + " candles.",
+      entryIndex: series.entryIndex,
+      exitIndex: series.exitIndex,
+    };
+  }
+
+  const periodMs = Math.max(60000, (Number(state.candlePeriod) || 5) * 60000);
+  const alignedCandles = series.candles.map((candle) => {
+    const index = nearestCandleIndex(benchmarkCandles, candle.time.getTime());
+    if (index < 0) return null;
+    const matched = benchmarkCandles[index];
+    return Math.abs(matched.time.getTime() - candle.time.getTime()) <= periodMs * 1.5 ? matched : null;
+  });
+
+  return {
+    instrument: symbol,
+    candles: alignedCandles,
+    sourceCandles: series.candles,
+    allCandles: benchmarkCandles,
+    status: alignedCandles.some(Boolean) ? "loaded" : "missing",
+    message: "No " + symbol + " candles matched this visible stock window.",
+    entryIndex: series.entryIndex,
+    exitIndex: series.exitIndex,
+  };
+}
+
+function drawBenchmarkPanel(trade, benchmarkSeries, left, plotW, slotWidth, top, blockHeight, candleWidth) {
+  const titleH = 18;
+  const bottomLabelH = 24;
+  const availableCandles = benchmarkSeries.candles.filter(Boolean);
+  const volumeH = availableCandles.some((candle) => candle.volume > 0) ? Math.max(34, Math.min(48, blockHeight * 0.18)) : 0;
+  const plotTop = top + titleH;
+  const plotH = Math.max(96, blockHeight - titleH - bottomLabelH - volumeH - (volumeH ? 10 : 0));
+  const volumeTop = plotTop + plotH + (volumeH ? 8 : 0);
+  const panelBottom = volumeH ? volumeTop + volumeH : plotTop + plotH;
+
+  ctx.strokeStyle = "#d9e0e8";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(left, top - 10);
+  ctx.lineTo(left + plotW, top - 10);
+  ctx.stroke();
+
+  ctx.fillStyle = "#17202a";
+  ctx.font = "700 13px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(benchmarkSeries.instrument + " Chart", left, top);
+
+  if (!availableCandles.length) {
+    ctx.strokeStyle = "#e3e8ef";
+    ctx.strokeRect(left, plotTop, plotW, plotH);
+    ctx.fillStyle = "#647184";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.fillText(benchmarkSeries.status === "loading" ? "Loading " + benchmarkSeries.instrument + " candles..." : benchmarkSeries.message, left + plotW / 2, plotTop + plotH / 2);
+    return;
+  }
+
+  const prices = availableCandles.flatMap((candle) => [candle.high, candle.low, candle.open, candle.close]);
+  if (Number.isFinite(trade.niftyEntry) && trade.niftyEntry > 0) prices.push(trade.niftyEntry);
+  if (Number.isFinite(trade.niftyExit) && trade.niftyExit > 0) prices.push(trade.niftyExit);
+  const rawMin = Math.min(...prices);
+  const rawMax = Math.max(...prices);
+  const pad = Math.max((rawMax - rawMin) * 0.12, 0.5);
+  const minPrice = rawMin - pad;
+  const maxPrice = rawMax + pad;
+
+  drawPriceGrid(left, plotTop, plotW, plotH, minPrice, maxPrice);
+  drawBenchmarkBand(trade, benchmarkSeries, left, slotWidth, plotTop, plotH + (volumeH ? 8 + volumeH : 0));
+
+  benchmarkSeries.candles.forEach((candle, index) => {
+    if (!candle) return;
+    const x = candleX(index, left, slotWidth);
+    const highlighted = index === benchmarkSeries.entryIndex || index === benchmarkSeries.exitIndex;
+    drawCandle(candle, x, candleWidth, plotTop, plotH, minPrice, maxPrice, highlighted);
+  });
+
+  drawBenchmarkTradeOverlay(trade, benchmarkSeries, left, slotWidth, plotTop, plotH, minPrice, maxPrice);
+
+  if (volumeH) {
+    drawBenchmarkVolume(benchmarkSeries.candles, left, slotWidth, candleWidth, volumeTop, volumeH);
+  }
+
+  drawTimeLabels(benchmarkSeries.sourceCandles, left, slotWidth, panelBottom + 16);
+  state.chartHover.panes.push({
+    name: benchmarkSeries.instrument,
+    candles: benchmarkSeries.candles,
+    left,
+    right: left + plotW,
+    top: plotTop,
+    bottom: panelBottom,
+    slotWidth,
+    tooltipRows: (index) => benchmarkTooltipRows(trade, benchmarkSeries, index),
+  });
+}
+
+function drawBenchmarkBand(trade, benchmarkSeries, left, slotWidth, top, height) {
+  if (benchmarkSeries.entryIndex == null || benchmarkSeries.exitIndex == null) return;
+  const startIndex = clamp(Math.min(benchmarkSeries.entryIndex, benchmarkSeries.exitIndex), 0, benchmarkSeries.candles.length - 1);
+  const endIndex = clamp(Math.max(benchmarkSeries.entryIndex, benchmarkSeries.exitIndex), 0, benchmarkSeries.candles.length - 1);
+  if (endIndex < 0) return;
+  const color = trade.profit >= 0 ? "18, 128, 92" : "199, 54, 47";
+  const xStart = candleX(startIndex, left, slotWidth) - slotWidth / 2;
+  const xEnd = candleX(endIndex, left, slotWidth) + slotWidth / 2;
+  ctx.fillStyle = "rgba(" + color + ", 0.06)";
+  ctx.fillRect(xStart, top, Math.max(slotWidth, xEnd - xStart), height);
+}
+
+function drawBenchmarkTradeOverlay(trade, benchmarkSeries, left, slotWidth, top, height, minPrice, maxPrice) {
+  const entryVisible = benchmarkSeries.entryIndex >= 0 && benchmarkSeries.entryIndex < benchmarkSeries.candles.length;
+  const exitVisible = benchmarkSeries.exitIndex >= 0 && benchmarkSeries.exitIndex < benchmarkSeries.candles.length;
+  const entryX = entryVisible ? candleX(benchmarkSeries.entryIndex, left, slotWidth) : null;
+  const exitX = exitVisible ? candleX(benchmarkSeries.exitIndex, left, slotWidth) : null;
+  const entryPrice = Number.isFinite(trade.niftyEntry) && trade.niftyEntry > 0 ? trade.niftyEntry : NaN;
+  const exitPrice = Number.isFinite(trade.niftyExit) && trade.niftyExit > 0 ? trade.niftyExit : NaN;
+
+  ctx.save();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = "#647184";
+  ctx.lineWidth = 1;
+  [entryX, exitX].forEach((x) => {
+    if (x == null) return;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + height);
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  if (entryVisible && exitVisible && Number.isFinite(entryPrice) && Number.isFinite(exitPrice)) {
+    ctx.strokeStyle = "#111827";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(entryX, yScale(entryPrice, top, height, minPrice, maxPrice));
+    ctx.lineTo(exitX, yScale(exitPrice, top, height, minPrice, maxPrice));
+    ctx.stroke();
+  }
+
+  if (entryVisible && Number.isFinite(entryPrice)) {
+    drawMarker(entryX, yScale(entryPrice, top, height, minPrice, maxPrice), "#246bfe", "E", entryPrice, 6, true);
+  }
+  if (exitVisible && Number.isFinite(exitPrice)) {
+    drawMarker(exitX, yScale(exitPrice, top, height, minPrice, maxPrice), "#a65f00", "X", exitPrice, 6, true);
+  }
+}
+
+function drawBenchmarkVolume(candles, left, slotWidth, candleWidth, top, height) {
+  const maxVolume = Math.max(1, ...candles.filter(Boolean).map((candle) => candle.volume || 0));
+  ctx.strokeStyle = "#d9e0e8";
+  ctx.beginPath();
+  ctx.moveTo(left, top);
+  ctx.lineTo(left + slotWidth * candles.length, top);
+  ctx.moveTo(left, top + height);
+  ctx.lineTo(left + slotWidth * candles.length, top + height);
+  ctx.stroke();
+  ctx.fillStyle = "#647184";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.fillText("Vol", left - 8, top + height / 2);
+  candles.forEach((candle, index) => {
+    if (!candle) return;
+    const x = candleX(index, left, slotWidth);
+    const volumeBarH = Math.max(1, ((candle.volume || 0) / maxVolume) * height);
+    ctx.fillStyle = candle.close >= candle.open ? "#12805c" : "#c7362f";
+    ctx.globalAlpha = 0.26;
+    ctx.fillRect(x - candleWidth / 2, top + height - volumeBarH, candleWidth, volumeBarH);
+    ctx.globalAlpha = 1;
+  });
+}
+
+function benchmarkTooltipRows(trade, benchmarkSeries, index) {
+  const rows = [];
+  if (index === benchmarkSeries.entryIndex && Number.isFinite(trade.niftyEntry) && trade.niftyEntry > 0) {
+    rows.push('<span class="tooltip-entry">NIFTY Entry #' + escapeHtml(trade.id) + ': ' + escapeHtml(formatPlain(trade.niftyEntry, 2)) + '</span>');
+  }
+  if (index === benchmarkSeries.exitIndex && Number.isFinite(trade.niftyExit) && trade.niftyExit > 0) {
+    rows.push('<span class="tooltip-exit">NIFTY Exit #' + escapeHtml(trade.id) + ': ' + escapeHtml(formatPlain(trade.niftyExit, 2)) + '</span>');
+  }
+  return rows;
 }
 
 function candleDataSourceLabel() {
@@ -3273,7 +3489,8 @@ function scheduleFrame(callback) {
 
 function handleCandleHover(event) {
   const hover = state.chartHover;
-  if (!hover || !hover.candles.length) {
+  const panes = hover && hover.panes ? hover.panes : hover ? [hover] : [];
+  if (!panes.length) {
     hideCandleHover();
     return;
   }
@@ -3281,15 +3498,30 @@ function handleCandleHover(event) {
   const rect = els.canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
-  if (x < hover.left || x > hover.right || y < hover.top || y > hover.bottom) {
+  const pane = panes.find((item) => (
+    item.candles &&
+    item.candles.length &&
+    x >= item.left &&
+    x <= item.right &&
+    y >= item.top &&
+    y <= item.bottom
+  ));
+  if (!pane) {
     hideCandleHover();
     return;
   }
 
-  const index = clamp(Math.floor((x - hover.left) / hover.slotWidth), 0, hover.candles.length - 1);
-  const candle = hover.candles[index];
-  showCandleCrosshair(candleX(index, hover.left, hover.slotWidth), hover);
-  showCandleTooltip(event, candle, tradeTooltipRows(hover.overlays || [], index).concat(indicatorTooltipRows(hover.indicators || [], index)));
+  const index = clamp(Math.floor((x - pane.left) / pane.slotWidth), 0, pane.candles.length - 1);
+  const candle = pane.candles[index];
+  if (!candle) {
+    hideCandleHover();
+    return;
+  }
+  const rows = pane.tooltipRows
+    ? pane.tooltipRows(index)
+    : tradeTooltipRows(pane.overlays || [], index).concat(indicatorTooltipRows(pane.indicators || [], index));
+  showCandleCrosshair(candleX(index, pane.left, pane.slotWidth), pane);
+  showCandleTooltip(event, candle, rows, pane.name);
 }
 
 function showCandleCrosshair(x, hover) {
@@ -3301,9 +3533,9 @@ function showCandleCrosshair(x, hover) {
   els.candleCrosshair.style.height = Math.max(1, hover.bottom - hover.top) + "px";
 }
 
-function showCandleTooltip(event, candle, indicatorRows = []) {
+function showCandleTooltip(event, candle, indicatorRows = [], paneName = "") {
   const rows = [
-    "<strong>" + escapeHtml(formatDate(candle.time)) + "</strong>",
+    "<strong>" + escapeHtml((paneName ? paneName + " | " : "") + formatDate(candle.time)) + "</strong>",
     "O: " + escapeHtml(formatPlain(candle.open, 2)) + " &nbsp; H: " + escapeHtml(formatPlain(candle.high, 2)),
     "L: " + escapeHtml(formatPlain(candle.low, 2)) + " &nbsp; C: " + escapeHtml(formatPlain(candle.close, 2)),
     "Vol: " + escapeHtml(formatNumber(candle.volume || 0, 0)),

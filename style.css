@@ -637,7 +637,7 @@ button:disabled {
 canvas {
   display: block;
   width: 100%;
-  height: 520px;
+  height: 820px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #ffffff;
@@ -828,7 +828,7 @@ tr:hover, tr.active {
   .filter-rule { grid-template-columns: 1fr 1fr; }
   .year-distribution { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; padding-top: 14px; }
   .filter-rule-remove { align-self: stretch; }
-  canvas { height: 420px; }
+  canvas { height: 640px; }
 }
 
 @media (max-width: 620px) {
