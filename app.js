@@ -2215,7 +2215,7 @@ function drawRealCandleTrade(trade, series) {
   const bottom = 64;
   const gap = 16;
   const niftySeries = benchmarkSeriesForVisibleWindow(series, "NIFTY50");
-  const niftyBlockH = Math.min(250, Math.max(210, h * 0.28));
+  const niftyBlockH = Math.min(275, Math.max(235, h * 0.28 + 25));
   const niftyGap = niftySeries ? 38 : 0;
   const reservedNiftyH = niftySeries ? niftyBlockH + niftyGap : 0;
   const indicatorData = buildIndicatorData(series);
