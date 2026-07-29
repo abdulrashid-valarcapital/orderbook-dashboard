@@ -2398,11 +2398,30 @@ function drawBenchmarkPanel(trade, benchmarkSeries, left, plotW, slotWidth, top,
   const titleH = 18;
   const bottomLabelH = 24;
   const availableCandles = benchmarkSeries.candles.filter(Boolean);
+  const benchmarkIndicatorData = availableCandles.length
+    ? buildIndicatorData(benchmarkSeries, {
+      instrument: benchmarkSeries.instrument,
+      chartCandles: benchmarkSeries.sourceCandles,
+      allCandles: benchmarkSeries.allCandles || availableCandles,
+      indicatorIds: state.activeIndicators.filter((id) => id !== "rs"),
+    })
+    : [];
+  const priceIndicators = benchmarkIndicatorData.filter((item) => !item.panel);
+  const panelIndicators = benchmarkIndicatorData.filter((item) => item.panel);
   const volumeH = availableCandles.some((candle) => candle.volume > 0) ? Math.max(34, Math.min(48, blockHeight * 0.18)) : 0;
+  const availableH = blockHeight - titleH - bottomLabelH - volumeH - (volumeH ? 10 : 0);
+  const panelGapTotal = panelIndicators.length ? panelIndicators.length * 8 : 0;
+  const maxPanelTotal = Math.max(0, availableH - 88);
+  const panelHeight = panelIndicators.length
+    ? Math.max(24, Math.min(58, Math.floor((maxPanelTotal - panelGapTotal) / panelIndicators.length)))
+    : 0;
+  const panelHeights = panelIndicators.map(() => panelHeight);
+  const panelTotalH = panelHeights.reduce((total, height) => total + height, 0) + panelGapTotal;
   const plotTop = top + titleH;
-  const plotH = Math.max(96, blockHeight - titleH - bottomLabelH - volumeH - (volumeH ? 10 : 0));
-  const volumeTop = plotTop + plotH + (volumeH ? 8 : 0);
-  const panelBottom = volumeH ? volumeTop + volumeH : plotTop + plotH;
+  const plotH = Math.max(72, availableH - panelTotalH);
+  const firstPanelTop = plotTop + plotH + 8;
+  const volumeTop = plotTop + plotH + panelTotalH + (volumeH ? 8 : 0);
+  const panelBottom = volumeH ? volumeTop + volumeH : plotTop + plotH + panelTotalH;
 
   ctx.strokeStyle = "#d9e0e8";
   ctx.lineWidth = 1;
@@ -2431,6 +2450,13 @@ function drawBenchmarkPanel(trade, benchmarkSeries, left, plotW, slotWidth, top,
   const prices = availableCandles.flatMap((candle) => [candle.high, candle.low, candle.open, candle.close]);
   if (Number.isFinite(trade.niftyEntry) && trade.niftyEntry > 0) prices.push(trade.niftyEntry);
   if (Number.isFinite(trade.niftyExit) && trade.niftyExit > 0) prices.push(trade.niftyExit);
+  priceIndicators.forEach((indicator) => {
+    indicator.series.forEach((line) => {
+      line.values.forEach((value) => {
+        if (Number.isFinite(value)) prices.push(value);
+      });
+    });
+  });
   const rawMin = Math.min(...prices);
   const rawMax = Math.max(...prices);
   const pad = Math.max((rawMax - rawMin) * 0.12, 0.5);
@@ -2447,7 +2473,9 @@ function drawBenchmarkPanel(trade, benchmarkSeries, left, plotW, slotWidth, top,
     drawCandle(candle, x, candleWidth, plotTop, plotH, minPrice, maxPrice, highlighted);
   });
 
+  drawPriceIndicators(priceIndicators, left, slotWidth, plotTop, plotH, minPrice, maxPrice);
   drawBenchmarkTradeOverlay(trade, benchmarkSeries, left, slotWidth, plotTop, plotH, minPrice, maxPrice);
+  drawIndicatorPanels(panelIndicators, left, slotWidth, firstPanelTop, panelHeights, plotW);
 
   if (volumeH) {
     drawBenchmarkVolume(benchmarkSeries.candles, left, slotWidth, candleWidth, volumeTop, volumeH);
@@ -2462,7 +2490,7 @@ function drawBenchmarkPanel(trade, benchmarkSeries, left, plotW, slotWidth, top,
     top: plotTop,
     bottom: panelBottom,
     slotWidth,
-    tooltipRows: (index) => benchmarkTooltipRows(trade, benchmarkSeries, index),
+    tooltipRows: (index) => benchmarkTooltipRows(trade, benchmarkSeries, index).concat(indicatorTooltipRows(benchmarkIndicatorData, index)),
   });
 }
 
@@ -2667,26 +2695,31 @@ function drawTradeOverlays(overlays, left, slotWidth, top, height, minPrice, max
   });
 }
 
-function buildIndicatorData(series) {
-  if (!state.activeIndicators.length) return [];
+function buildIndicatorData(series, options = {}) {
+  const activeIndicators = options.indicatorIds || state.activeIndicators;
+  if (!activeIndicators.length) return [];
+  const instrument = normalizeSymbol(options.instrument || series.instrument);
+  const chartCandles = options.chartCandles || series.candles;
+  const allCandles = options.allCandles || series.allCandles;
+  if (!chartCandles.length) return [];
   const indicatorPeriod = effectiveIndicatorPeriod();
   const chartPeriod = Number(state.candlePeriod) || 5;
   const indicatorCandles = indicatorPeriod === chartPeriod
-    ? series.allCandles
-    : candlesForInstrument(series.instrument, indicatorPeriod);
+    ? allCandles
+    : candlesForInstrument(instrument, indicatorPeriod);
   if (!indicatorCandles.length) {
-    requestServerCandles({ instrument: series.instrument }, indicatorPeriod);
+    requestServerCandles({ instrument }, indicatorPeriod);
     return [];
   }
-  const chartStartTime = series.candles[0].time.getTime();
-  const chartEndTime = series.candles[series.candles.length - 1].time.getTime();
+  const chartStartTime = chartCandles[0].time.getTime();
+  const chartEndTime = chartCandles[chartCandles.length - 1].time.getTime();
   const indicatorEnd = latestCandleIndexAtOrBefore(indicatorCandles, chartEndTime);
   if (indicatorEnd < 0) {
-    requestServerCandles({ instrument: series.instrument }, indicatorPeriod);
+    requestServerCandles({ instrument }, indicatorPeriod);
     return [];
   }
   const indicatorStartAtWindow = latestCandleIndexAtOrBefore(indicatorCandles, chartStartTime);
-  const configuredWarmup = Math.max(220, ...state.activeIndicators.map((id) => {
+  const configuredWarmup = Math.max(220, ...activeIndicators.map((id) => {
     const settings = getIndicatorSettings(id);
     if (id === "rs") return (Number(settings.lookback) || 25) + 5;
     if (id === "bb" || id === "sma" || id === "ema" || id === "rsi" || id === "adx") return (Number(settings.length) || 14) * 3;
@@ -2697,13 +2730,13 @@ function buildIndicatorData(series) {
   const warmup = Math.min(Math.max(0, indicatorStartAtWindow), configuredWarmup);
   const start = Math.max(0, Math.max(0, indicatorStartAtWindow) - warmup);
   const source = indicatorCandles.slice(start, indicatorEnd + 1);
-  const alignedIndexes = alignIndicatorSourceIndexes(series.candles, source);
+  const alignedIndexes = alignIndicatorSourceIndexes(chartCandles, source);
   const closes = source.map((candle) => candle.close);
   const highs = source.map((candle) => candle.high);
   const lows = source.map((candle) => candle.low);
-  const visibleLength = series.candles.length;
+  const visibleLength = chartCandles.length;
 
-  return state.activeIndicators.map((id) => {
+  return activeIndicators.map((id) => {
     const settings = getIndicatorSettings(id);
     if (id === "sma") {
       return { id, period: indicatorPeriod, panel: false, series: [{ label: indicatorLineLabel("SMA " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(sma(closes, settings.length), alignedIndexes, visibleLength) }] };
