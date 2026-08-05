@@ -37,18 +37,20 @@ PRICE_STORE_ZIP_ID=<google_drive_file_id>
 PRICE_STORE_CACHE_ROOT=/tmp/priceStoreCache
 PRICE_STORE_SYMBOL_BASE_URL=https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-5m-v1/
 PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE=https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-{timeframe}m-v1/
+PRICE_STORE_375_DRIVE_FOLDER_ID=149bAVH0lOopQL8CHyiDcoTogzvFdPPub
 PRICE_STORE_375_SYMBOL_BASE_URL=https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-atr2-v1/
 ```
 
 For hosted demos, prefer `PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE`. It points at
 per-symbol candle files for the selected timeframe, so the server can download
-direct timeframe assets instead of aggregating from 5m. `PRICE_STORE_375_SYMBOL_BASE_URL`
-is used for `Candle = 1 Day`/`375`, so daily candles can come from the Drive CSV
-or uploaded ATR CSV export release. Missing `375` assets do not fall back to price-store data,
-because mixing adjusted daily CSV prices with price-store prices can show the
-wrong chart. Other missing direct timeframe assets fall back to the 5m symbol
-store and aggregate from there. The full Google Drive zip can remain configured
-as a fallback, but it is too large for free hosting.
+direct timeframe assets instead of aggregating from 5m. `PRICE_STORE_375_DRIVE_FOLDER_ID`
+is used for `Candle = 1 Day`/`375`, so daily candles come directly from the
+public Drive folder CSV files named `SYMBOL.csv`. Missing `375` CSVs do not fall
+back to price-store data, because mixing adjusted daily CSV prices with
+price-store prices can show the wrong chart. Other missing direct timeframe
+assets fall back to the 5m symbol store and aggregate from there. The full Google
+Drive zip can remain configured as a fallback, but it is too large for free
+hosting.
 
 Health check:
 

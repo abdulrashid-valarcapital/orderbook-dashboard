@@ -277,7 +277,7 @@ function normalizeOrderBook(records) {
       maxProfitPercent: toNumber(getField(row, ["TradeMaxProfit%", "TradeMaxProfit"])),
       rank: row["rank since low"] || row.rank || "-",
       returnSinceNiftyLow: toNumber(row["return since nifty low"]),
-      relativeStrength: toNumber(row["relative strength"]),
+      relativeStrength: toNumber(getField(row, ["relative strength", "relative strength Entry", "RelativeStrength", "RelativeStrengthEntry", "EntryRelativeStrength", "Entry RS", "EntryRS"])),
       tradingDaysSinceNiftyLow: toNumber(row["trading days since nifty low"]),
       dayAtrPercent: toNumber(row["DayATR%"]),
       dayAtrPercentile: toNumber(row["DayATR%ile"]),
@@ -429,7 +429,7 @@ function filterHeaderAliases(field) {
     maxProfitPercent: ["TradeMaxProfit", "TradeMaxProfit%"],
     rankSinceLow: ["rank since low"],
     returnSinceNiftyLow: ["return since nifty low"],
-    relativeStrength: ["relative strength"],
+    relativeStrength: ["relative strength", "relative strength Entry", "RelativeStrength", "RelativeStrengthEntry", "EntryRelativeStrength", "Entry RS", "EntryRS"],
     tradingDaysSinceNiftyLow: ["trading days since nifty low"],
     dayAtrPercent: ["DayATR%"],
     dayAtrPercentile: ["DayATR%ile"],
@@ -2171,7 +2171,7 @@ function showTrade(index) {
     ["Window", realSeries ? formatShortDateTime(realSeries.candles[0].time) + " to " + formatShortDateTime(realSeries.candles[realSeries.candles.length - 1].time) : "-"],
     ["Profit", formatPlain(trade.profit, 2)],
     ["Profit Cost %", formatPlain(trade.profitPercent, 2) + "%"],
-    ["Relative Strength", trade.relativeStrength ? formatPlain(trade.relativeStrength, 2) : "-"],
+    ["Relative Strength", Number.isFinite(trade.relativeStrength) ? formatPlain(trade.relativeStrength, 2) : "-"],
   ].map(([label, value]) => (
     '<div class="detail-row"><div class="label">' + escapeHtml(label) + '</div><strong>' + escapeHtml(value) + '</strong></div>'
   )).join("");
@@ -2801,8 +2801,8 @@ function buildIndicatorData(series, options = {}) {
         period: indicatorPeriod,
         panel: false,
         series: [
-          { label: indicatorLineLabel("Supertrend Up", indicatorPeriod), color: settings.upColor, values: alignIndicatorValues(trend.up, alignedIndexes, visibleLength) },
-          { label: indicatorLineLabel("Supertrend Down", indicatorPeriod), color: settings.downColor, values: alignIndicatorValues(trend.down, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("Supertrend Up", indicatorPeriod), color: settings.upColor, trendColor: "Green", values: alignIndicatorValues(trend.up, alignedIndexes, visibleLength) },
+          { label: indicatorLineLabel("Supertrend Down", indicatorPeriod), color: settings.downColor, trendColor: "Red", values: alignIndicatorValues(trend.down, alignedIndexes, visibleLength) },
         ],
       };
     }
@@ -3605,7 +3605,8 @@ function indicatorTooltipRows(indicators, index) {
     const rows = indicator.series
       .map((line) => {
         const value = line.values[index];
-        return Number.isFinite(value) ? escapeHtml(line.label) + ": " + escapeHtml(formatPlain(value, 2)) : "";
+        const label = line.trendColor ? line.label.replace(/^Supertrend (Up|Down)/, "Supertrend $1 " + line.trendColor) : line.label;
+        return Number.isFinite(value) ? escapeHtml(label) + ": " + escapeHtml(formatPlain(value, 2)) : "";
       })
       .filter(Boolean);
     if (indicator.histogram && Number.isFinite(indicator.histogram[index])) {

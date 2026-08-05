@@ -14,6 +14,9 @@ const PRICE_STORE_ZIP_URL = process.env.PRICE_STORE_ZIP_URL || "";
 const PRICE_STORE_ZIP_ID = process.env.PRICE_STORE_ZIP_ID || "";
 const PRICE_STORE_SYMBOL_BASE_URL = process.env.PRICE_STORE_SYMBOL_BASE_URL || "";
 const PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE = process.env.PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE || "";
+const PRICE_STORE_375_DRIVE_FOLDER_ID = process.env.PRICE_STORE_375_DRIVE_FOLDER_ID
+  || googleDriveFolderId(process.env.PRICE_STORE_375_DRIVE_FOLDER_URL)
+  || "149bAVH0lOopQL8CHyiDcoTogzvFdPPub";
 const PRICE_STORE_375_SYMBOL_BASE_URL = process.env.PRICE_STORE_375_SYMBOL_BASE_URL
   || "https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-375m-atr2-v1/";
 const SYMBOL_CANDLE_CACHE_ROOT = process.env.SYMBOL_CANDLE_CACHE_ROOT || path.join(PRICE_STORE_CACHE_ROOT, "symbols");
@@ -32,6 +35,8 @@ const cache = {
   instrumentIds: null,
   seriesByTimeframe: new Map(),
   symbolCandles: new Map(),
+  driveFolderFiles: new Map(),
+  driveCsvCandles: new Map(),
 };
 
 function normalizeSymbol(value) {
@@ -44,6 +49,13 @@ function compactSymbol(value) {
 
 function symbolAssetName(symbol, timeframe) {
   return compactSymbol(symbol) + "_" + Number(timeframe || 5) + "m.json.gz";
+}
+
+function googleDriveFolderId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/\/folders\/([^/?#]+)/) || raw.match(/[?&]id=([^&#]+)/);
+  return match ? decodeURIComponent(match[1]) : raw;
 }
 
 function googleDriveDownloadUrl(value) {
@@ -162,6 +174,143 @@ function decodeHtml(value) {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+function parseDriveFolderFiles(html) {
+  const files = new Map();
+
+  const embeddedEntryPattern = /<div class="flip-entry" id="entry-([A-Za-z0-9_-]{20,})"[\s\S]{0,2200}?<div class="flip-entry-title">([^<]+\.csv)<\/div>/g;
+  let match;
+  while ((match = embeddedEntryPattern.exec(html))) {
+    files.set(compactSymbol(match[2].replace(/\.csv$/i, "")), {
+      id: match[1],
+      name: decodeHtml(match[2]),
+    });
+  }
+
+  const driveAppPattern = /\[\[null,"([A-Za-z0-9_-]{20,})"\],null,null,null,"text\/csv"[\s\S]{0,2000}?\[\[\["([^"]+\.csv)",null,1\]\]\]/g;
+  while ((match = driveAppPattern.exec(html))) {
+    files.set(compactSymbol(match[2].replace(/\.csv$/i, "")), {
+      id: match[1],
+      name: decodeHtml(match[2]),
+    });
+  }
+
+  return files;
+}
+
+function readDriveFolderFiles(folderId) {
+  const id = googleDriveFolderId(folderId);
+  if (!id) return new Map();
+  if (cache.driveFolderFiles.has(id)) return cache.driveFolderFiles.get(id);
+
+  const cacheDir = path.join(SYMBOL_CANDLE_CACHE_ROOT, "drive-folder-" + crypto.createHash("sha1").update(id).digest("hex").slice(0, 10));
+  const htmlPath = path.join(cacheDir, "embedded-folder.html");
+  if (!fs.existsSync(htmlPath)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    downloadRawFile(`https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(id)}#list`, htmlPath);
+  }
+
+  const files = parseDriveFolderFiles(fs.readFileSync(htmlPath, "utf8"));
+  cache.driveFolderFiles.set(id, files);
+  return files;
+}
+
+function parseCsvLine(line) {
+  const cells = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+
+  cells.push(cell.trim());
+  return cells;
+}
+
+function parseNumber(value) {
+  const normalized = String(value || "").replace(/,/g, "").trim();
+  if (!normalized) return NaN;
+  return Number(normalized);
+}
+
+function parseDriveCandleDateMs(value, timeframe = 375) {
+  const raw = String(value || "").trim();
+  if (!raw) return NaN;
+
+  if (/^-?\d+(\.\d+)?(e[+-]?\d+)?$/i.test(raw)) {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric)) {
+      if (Math.abs(numeric) > 1e12) return numeric;
+      if (Math.abs(numeric) > 1e9) return numeric * 1000;
+    }
+  }
+
+  const parts = raw.match(/^(\d{1,4})[/-](\d{1,2})[/-](\d{1,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!parts) {
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+
+  let day;
+  let month;
+  let year;
+  const first = Number(parts[1]);
+  const second = Number(parts[2]);
+  const third = Number(parts[3]);
+  if (parts[1].length === 4) {
+    year = first;
+    month = second;
+    day = third;
+  } else {
+    day = first;
+    month = second;
+    year = third;
+  }
+  if (year < 100) year += year >= 70 ? 1900 : 2000;
+
+  const hasTime = parts[4] != null;
+  const hour = hasTime ? Number(parts[4]) : (Number(timeframe) === 375 ? 15 : 9);
+  const minute = hasTime ? Number(parts[5]) : (Number(timeframe) === 375 ? 30 : 15);
+  const secondValue = hasTime ? Number(parts[6] || 0) : 0;
+  return Date.UTC(year, month - 1, day, hour, minute, secondValue) - IST_OFFSET_MS;
+}
+
+function parseDriveCandleCsv(text, timeframe = 375) {
+  const candles = [];
+  const lines = String(text || "").split(/\r?\n/);
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const cells = parseCsvLine(line);
+    if (cells.length < 6) continue;
+
+    const timestamp = parseDriveCandleDateMs(cells[0], timeframe);
+    const open = parseNumber(cells[1]);
+    const high = parseNumber(cells[2]);
+    const low = parseNumber(cells[3]);
+    const close = parseNumber(cells[4]);
+    const volume = parseNumber(cells[5]);
+
+    if (![timestamp, open, high, low, close].every(Number.isFinite)) continue;
+    candles.push([timestamp, open, high, low, close, Number.isFinite(volume) ? volume : 0]);
+  }
+
+  return candles.sort((a, b) => a[0] - b[0]);
 }
 
 function isZipFile(filePath) {
@@ -291,6 +440,10 @@ function upperBound(fd, left, right, targetMs) {
 }
 
 function candlesBetween(symbol, timeframe, fromMs, toMs) {
+  if (Number(timeframe) === 375) {
+    return driveCsvCandlesBetween(symbol, timeframe, fromMs, toMs);
+  }
+
   if (PRICE_STORE_SYMBOL_BASE_URL) {
     return symbolCandlesBetween(symbol, timeframe, fromMs, toMs);
   }
@@ -334,6 +487,55 @@ function candlesBetween(symbol, timeframe, fromMs, toMs) {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+function driveCsvCandlesBetween(symbol, timeframe, fromMs, toMs) {
+  const source = readDriveCsvCandles(symbol, timeframe);
+  if (!source || !source.length) {
+    return {
+      status: 404,
+      payload: {
+        error: `No Drive day candle CSV found for ${symbol}. 375/day candles do not fall back to price-store data.`,
+      },
+    };
+  }
+
+  return {
+    status: 200,
+    payload: {
+      symbol,
+      timeframe,
+      source: "drive-375-csv",
+      candles: source.filter((candle) => candle[0] >= fromMs && candle[0] <= toMs),
+    },
+  };
+}
+
+function readDriveCsvCandles(symbol, timeframe = 375) {
+  const normalizedSymbol = compactSymbol(symbol);
+  const folderId = googleDriveFolderId(PRICE_STORE_375_DRIVE_FOLDER_ID);
+  if (!normalizedSymbol || !folderId || Number(timeframe) !== 375) return null;
+
+  const key = folderId + "|" + normalizedSymbol;
+  if (cache.driveCsvCandles.has(key)) return cache.driveCsvCandles.get(key);
+
+  const files = readDriveFolderFiles(folderId);
+  const file = files.get(normalizedSymbol);
+  if (!file || !file.id) {
+    cache.driveCsvCandles.set(key, null);
+    return null;
+  }
+
+  const cacheDir = path.join(SYMBOL_CANDLE_CACHE_ROOT, "drive-375-csv-" + crypto.createHash("sha1").update(folderId).digest("hex").slice(0, 10));
+  const filePath = path.join(cacheDir, normalizedSymbol + ".csv");
+  if (!fs.existsSync(filePath)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    downloadRawFile(googleDriveDownloadUrl(file.id), filePath);
+  }
+
+  const candles = parseDriveCandleCsv(fs.readFileSync(filePath, "utf8"), timeframe);
+  cache.driveCsvCandles.set(key, candles);
+  return candles;
 }
 
 function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
@@ -533,6 +735,7 @@ const server = http.createServer((req, res) => {
         priceStoreZipConfigured: Boolean(PRICE_STORE_ZIP),
         priceStoreZipUrlConfigured: Boolean(PRICE_STORE_ZIP_URL || PRICE_STORE_ZIP_ID),
         symbolCandleStoreConfigured: Boolean(PRICE_STORE_SYMBOL_BASE_URL),
+        drive375FolderConfigured: Boolean(PRICE_STORE_375_DRIVE_FOLDER_ID),
       });
       return;
     }
