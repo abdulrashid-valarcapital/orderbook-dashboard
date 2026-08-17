@@ -6,6 +6,7 @@ const state = {
   indicatorPeriod: "same",
   candleRequests: new Set(),
   candleRequestErrors: new Map(),
+  candleRetryTimers: new Map(),
   candleFetchDisabled: false,
   candleCacheVersion: 0,
   candleSeriesCache: new Map(),
@@ -14,6 +15,7 @@ const state = {
   chartWindowStartByTrade: new Map(),
   chartWindowSizeByPeriod: new Map(),
   chartHover: null,
+  candleErrorRetryMs: 15000,
   activeIndicators: [],
   indicatorSettings: {},
   editingIndicator: null,
@@ -3316,6 +3318,10 @@ function setCandlePeriod(value) {
   els.candlePeriodSelect.value = String(state.candlePeriod);
   state.chartWindowStartByTrade.clear();
   state.candleSeriesCache.clear();
+  state.candleRequestErrors.clear();
+  state.candleRetryTimers.forEach((timer) => clearTimeout(timer));
+  state.candleRetryTimers.clear();
+  state.candleFetchDisabled = false;
 }
 
 function effectiveIndicatorPeriod() {
@@ -3345,12 +3351,18 @@ function requestServerCandles(trade, period = state.candlePeriod) {
 
   const { fromMs, toMs } = fullDataWindowMs();
   const key = candleRequestKey(trade, candlePeriod);
-  if (state.candleRequestErrors.has(key)) {
-    return {
-      status: "error",
-      label: "No real candles loaded",
-      message: state.candleRequestErrors.get(key),
-    };
+  const cachedError = state.candleRequestErrors.get(key);
+  if (cachedError) {
+    const errorAge = Date.now() - (cachedError.at || 0);
+    if (errorAge < state.candleErrorRetryMs) {
+      scheduleCandleRetry(key, state.candleErrorRetryMs - errorAge);
+      return {
+        status: "error",
+        label: "No real candles loaded",
+        message: cachedError.message || "Candle request failed.",
+      };
+    }
+    state.candleRequestErrors.delete(key);
   }
 
   if (state.candleRequests.has(key)) {
@@ -3391,7 +3403,11 @@ function requestServerCandles(trade, period = state.candlePeriod) {
       }));
       state.candleRequests.delete(key);
       if (!records.length) {
-        state.candleRequestErrors.set(key, "The local price store returned zero candles for this instrument/time window.");
+        state.candleRequestErrors.set(key, {
+          message: "The candle store returned zero candles for this instrument/time window.",
+          at: Date.now(),
+        });
+        scheduleCandleRetry(key, state.candleErrorRetryMs);
       }
       state.candles = state.candles.concat(normalizeCandleData(records, payload.timeframe || candlePeriod));
       invalidateCandleCaches();
@@ -3400,9 +3416,13 @@ function requestServerCandles(trade, period = state.candlePeriod) {
     .catch((error) => {
       state.candleRequests.delete(key);
       if (/Failed to fetch|NetworkError|Load failed/i.test(error.message)) {
-        state.candleFetchDisabled = true;
+        state.candleFetchDisabled = window.location.protocol === "file:";
       }
-      state.candleRequestErrors.set(key, error.message || "Candle request failed.");
+      state.candleRequestErrors.set(key, {
+        message: error.message || "Candle request failed.",
+        at: Date.now(),
+      });
+      scheduleCandleRetry(key, state.candleErrorRetryMs);
       console.warn(error.message);
       showTrade(state.activeIndex);
     });
@@ -3412,6 +3432,16 @@ function requestServerCandles(trade, period = state.candlePeriod) {
     label: "Loading " + formatCandlePeriod(candlePeriod) + " candles",
     message: "Reading full " + trade.instrument + " candle history from the candle data store.",
   };
+}
+
+function scheduleCandleRetry(key, delayMs) {
+  if (state.candleRetryTimers.has(key)) return;
+  const timer = setTimeout(() => {
+    state.candleRetryTimers.delete(key);
+    state.candleRequestErrors.delete(key);
+    showTrade(state.activeIndex);
+  }, Math.max(1000, delayMs || state.candleErrorRetryMs));
+  state.candleRetryTimers.set(key, timer);
 }
 
 function candleApiUrl(params) {
