@@ -14,6 +14,11 @@ const PRICE_STORE_ZIP_URL = process.env.PRICE_STORE_ZIP_URL || "";
 const PRICE_STORE_ZIP_ID = process.env.PRICE_STORE_ZIP_ID || "";
 const PRICE_STORE_SYMBOL_BASE_URL = process.env.PRICE_STORE_SYMBOL_BASE_URL || "";
 const PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE = process.env.PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE || "";
+const PRICE_STORE_ALL_TIMEFRAMES_ZIP_ID = process.env.PRICE_STORE_ALL_TIMEFRAMES_ZIP_ID
+  || googleDriveFileId(process.env.PRICE_STORE_ALL_TIMEFRAMES_ZIP_URL)
+  || "1v56gV-Lf6cR09Q0hgC3u-yt0JTMSRktC";
+const PRICE_STORE_ALL_TIMEFRAMES_ZIP_URL = process.env.PRICE_STORE_ALL_TIMEFRAMES_ZIP_URL || "";
+const PRICE_STORE_ALL_TIMEFRAMES = process.env.PRICE_STORE_ALL_TIMEFRAMES || "5,15,30,60,375,1875";
 const PRICE_STORE_375_DRIVE_FOLDER_ID = process.env.PRICE_STORE_375_DRIVE_FOLDER_ID
   || googleDriveFolderId(process.env.PRICE_STORE_375_DRIVE_FOLDER_URL)
   || "149bAVH0lOopQL8CHyiDcoTogzvFdPPub";
@@ -24,7 +29,10 @@ const PRICE_STORE_ZIP_CACHE = process.env.PRICE_STORE_ZIP_CACHE || path.join(PRI
 const PRICE_STORE_ZIP = process.env.PRICE_STORE_ZIP
   || (fs.existsSync(DEFAULT_PRICE_STORE_ZIP) ? DEFAULT_PRICE_STORE_ZIP : "")
   || ((PRICE_STORE_ZIP_URL || PRICE_STORE_ZIP_ID) ? PRICE_STORE_ZIP_CACHE : "");
-const PRICE_STORE_ROOT = process.env.PRICE_STORE_ROOT || (PRICE_STORE_ZIP ? PRICE_STORE_CACHE_ROOT : "/Users/abdulrashid/Desktop/strategyConfig/common/newPriceStore");
+const PRICE_STORE_REMOTE_ZIP_ROOT = path.join(PRICE_STORE_CACHE_ROOT, "pricestore_stocks_all_timeframes");
+const PRICE_STORE_ROOT = process.env.PRICE_STORE_ROOT
+  || (remoteAllTimeframesZipConfigured() ? PRICE_STORE_REMOTE_ZIP_ROOT : "")
+  || (PRICE_STORE_ZIP ? PRICE_STORE_CACHE_ROOT : "/Users/abdulrashid/Desktop/strategyConfig/common/newPriceStore");
 const BAR_ROW_SIZE = 48;
 const SERIES_META_ROW_SIZE = 24;
 const MARKET_OPEN_MINUTES = 9 * 60 + 15;
@@ -34,9 +42,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const cache = {
   instrumentIds: null,
   seriesByTimeframe: new Map(),
+  seriesRowCounts: new Map(),
+  barRowSizes: new Map(),
   symbolCandles: new Map(),
   driveFolderFiles: new Map(),
   driveCsvCandles: new Map(),
+  remoteZip: null,
 };
 
 function normalizeSymbol(value) {
@@ -49,6 +60,24 @@ function compactSymbol(value) {
 
 function symbolAssetName(symbol, timeframe) {
   return compactSymbol(symbol) + "_" + Number(timeframe || 5) + "m.json.gz";
+}
+
+function remoteAllTimeframesZipConfigured() {
+  return Boolean(PRICE_STORE_ALL_TIMEFRAMES_ZIP_ID || PRICE_STORE_ALL_TIMEFRAMES_ZIP_URL);
+}
+
+function allTimeframesSet() {
+  return new Set(String(PRICE_STORE_ALL_TIMEFRAMES || "")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter(Number.isFinite));
+}
+
+function googleDriveFileId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/\/file\/d\/([^/?#]+)/) || raw.match(/[?&]id=([^&#]+)/);
+  return match ? decodeURIComponent(match[1]) : raw;
 }
 
 function googleDriveFolderId(value) {
@@ -67,6 +96,22 @@ function googleDriveDownloadUrl(value) {
     return raw;
   }
   return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(raw)}`;
+}
+
+function googleDriveLargeDownloadUrl(value) {
+  const raw = String(value || "").trim();
+  const fileId = googleDriveFileId(raw);
+  if (fileId && !/^https?:\/\/(?!drive\.google\.com\/file\/d\/)/i.test(raw)) {
+    return `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+  }
+  if (/drive\.google\.com\/file\/d\//i.test(raw) && fileId) {
+    return `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+  }
+  return raw;
+}
+
+function allTimeframesZipUrl() {
+  return googleDriveLargeDownloadUrl(PRICE_STORE_ALL_TIMEFRAMES_ZIP_URL || PRICE_STORE_ALL_TIMEFRAMES_ZIP_ID);
 }
 
 function ensurePriceStoreZip() {
@@ -145,6 +190,26 @@ function downloadRawFile(sourceUrl, targetPath) {
   }
 }
 
+function downloadRangeFile(sourceUrl, start, end, targetPath) {
+  const tempPath = `${targetPath}.download`;
+  try {
+    childProcess.execFileSync("curl", ["-L", "--fail", "--range", `${start}-${end}`, "--output", tempPath, sourceUrl], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    throw new Error(`Range download failed for ${sourceUrl}: ${error.message}`);
+  }
+}
+
+function curlHead(sourceUrl) {
+  return childProcess.execFileSync("curl", ["-L", "--fail", "--head", sourceUrl], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
 function googleDriveConfirmUrl(page) {
   const action = page.match(/<form[^>]+id=["']download-form["'][^>]+action=["']([^"']+)["']/i);
   if (!action) return "";
@@ -174,6 +239,202 @@ function decodeHtml(value) {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+function parseContentLength(headers) {
+  const matches = String(headers || "").match(/^content-length:\s*(\d+)/gim);
+  if (!matches || !matches.length) return NaN;
+  const last = matches[matches.length - 1].match(/(\d+)/);
+  return last ? Number(last[1]) : NaN;
+}
+
+function u16(buffer, offset) {
+  return buffer.readUInt16LE(offset);
+}
+
+function u32(buffer, offset) {
+  return buffer.readUInt32LE(offset);
+}
+
+function u64(buffer, offset) {
+  return Number(buffer.readBigUInt64LE(offset));
+}
+
+function parseZipCentralDirectory(tail, totalSize) {
+  const baseOffset = totalSize - tail.length;
+  let eocdOffset = -1;
+  for (let offset = tail.length - 22; offset >= 0; offset -= 1) {
+    if (u32(tail, offset) === 0x06054b50) {
+      eocdOffset = offset;
+      break;
+    }
+  }
+  if (eocdOffset < 0) throw new Error("Remote zip central directory not found");
+
+  let entryCount = u16(tail, eocdOffset + 10);
+  let centralDirectorySize = u32(tail, eocdOffset + 12);
+  let centralDirectoryOffset = u32(tail, eocdOffset + 16);
+
+  let zip64LocatorOffset = -1;
+  for (let offset = eocdOffset - 20; offset >= Math.max(0, eocdOffset - 200); offset -= 1) {
+    if (u32(tail, offset) === 0x07064b50) {
+      zip64LocatorOffset = offset;
+      break;
+    }
+  }
+
+  if (zip64LocatorOffset >= 0) {
+    const zip64EocdOffset = u64(tail, zip64LocatorOffset + 8) - baseOffset;
+    if (zip64EocdOffset >= 0 && zip64EocdOffset + 56 <= tail.length && u32(tail, zip64EocdOffset) === 0x06064b50) {
+      entryCount = u64(tail, zip64EocdOffset + 32);
+      centralDirectorySize = u64(tail, zip64EocdOffset + 40);
+      centralDirectoryOffset = u64(tail, zip64EocdOffset + 48);
+    }
+  }
+
+  const directoryOffset = centralDirectoryOffset - baseOffset;
+  if (directoryOffset < 0 || directoryOffset + centralDirectorySize > tail.length) {
+    throw new Error("Remote zip central directory is larger than fetched tail");
+  }
+
+  const entries = new Map();
+  let offset = directoryOffset;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (u32(tail, offset) !== 0x02014b50) break;
+    const method = u16(tail, offset + 10);
+    const compressedSize32 = u32(tail, offset + 20);
+    const uncompressedSize32 = u32(tail, offset + 24);
+    const fileNameLength = u16(tail, offset + 28);
+    const extraLength = u16(tail, offset + 30);
+    const commentLength = u16(tail, offset + 32);
+    const localOffset32 = u32(tail, offset + 42);
+    const name = tail.slice(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+    const extra = tail.slice(offset + 46 + fileNameLength, offset + 46 + fileNameLength + extraLength);
+
+    let compressedSize = compressedSize32;
+    let uncompressedSize = uncompressedSize32;
+    let localOffset = localOffset32;
+    for (let extraOffset = 0; extraOffset + 4 <= extra.length;) {
+      const headerId = extra.readUInt16LE(extraOffset);
+      const dataSize = extra.readUInt16LE(extraOffset + 2);
+      extraOffset += 4;
+      if (headerId === 0x0001) {
+        let dataOffset = extraOffset;
+        if (uncompressedSize32 === 0xffffffff) {
+          uncompressedSize = Number(extra.readBigUInt64LE(dataOffset));
+          dataOffset += 8;
+        }
+        if (compressedSize32 === 0xffffffff) {
+          compressedSize = Number(extra.readBigUInt64LE(dataOffset));
+          dataOffset += 8;
+        }
+        if (localOffset32 === 0xffffffff) {
+          localOffset = Number(extra.readBigUInt64LE(dataOffset));
+        }
+      }
+      extraOffset += dataSize;
+    }
+
+    if (!name.includes("__MACOSX/") && !name.endsWith("/")) {
+      const entry = { name, method, compressedSize, uncompressedSize, localOffset };
+      entries.set(name, entry);
+      entries.set(path.basename(name), entry);
+    }
+
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function readRemoteZipInfo() {
+  if (cache.remoteZip) return cache.remoteZip;
+
+  const sourceUrl = allTimeframesZipUrl();
+  if (!sourceUrl) throw new Error("Missing all-timeframes price-store zip URL");
+
+  const indexDir = path.join(PRICE_STORE_CACHE_ROOT, "remote-zip-index");
+  const indexPath = path.join(indexDir, crypto.createHash("sha1").update(sourceUrl).digest("hex").slice(0, 12) + ".json");
+  if (fs.existsSync(indexPath)) {
+    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    parsed.entries = new Map(parsed.entries);
+    cache.remoteZip = parsed;
+    return parsed;
+  }
+
+  const totalSize = parseContentLength(curlHead(sourceUrl));
+  if (!Number.isFinite(totalSize) || totalSize <= 0) {
+    throw new Error("Could not read remote zip size");
+  }
+
+  fs.mkdirSync(indexDir, { recursive: true });
+  const tailSize = Math.min(totalSize, 2 * 1024 * 1024);
+  const tailPath = path.join(indexDir, "tail-" + Date.now() + ".bin");
+  downloadRangeFile(sourceUrl, totalSize - tailSize, totalSize - 1, tailPath);
+  const entries = parseZipCentralDirectory(fs.readFileSync(tailPath), totalSize);
+  fs.unlinkSync(tailPath);
+
+  const info = { sourceUrl, totalSize, entries };
+  fs.writeFileSync(indexPath, JSON.stringify({
+    sourceUrl,
+    totalSize,
+    entries: Array.from(entries.entries()),
+  }));
+  cache.remoteZip = info;
+  return info;
+}
+
+function remoteZipMemberFor(fileName) {
+  const info = readRemoteZipInfo();
+  return info.entries.get(fileName) || info.entries.get(path.join("pricestore_stocks_all_timeframes", fileName));
+}
+
+function readRemoteZipLocalDataOffset(entry) {
+  const info = readRemoteZipInfo();
+  const headerPath = path.join(PRICE_STORE_CACHE_ROOT, "remote-zip-index", "local-header-" + crypto.randomBytes(6).toString("hex") + ".bin");
+  downloadRangeFile(info.sourceUrl, entry.localOffset, entry.localOffset + 1023, headerPath);
+  const header = fs.readFileSync(headerPath);
+  fs.unlinkSync(headerPath);
+
+  if (u32(header, 0) !== 0x04034b50) {
+    throw new Error(`Invalid local zip header for ${entry.name}`);
+  }
+  return entry.localOffset + 30 + u16(header, 26) + u16(header, 28);
+}
+
+function ensureRemoteZipMemberFile(fileName) {
+  const filePath = path.join(PRICE_STORE_ROOT, fileName);
+  if (fs.existsSync(filePath)) return filePath;
+
+  const entry = remoteZipMemberFor(fileName);
+  if (!entry) throw new Error(`Missing ${fileName} in all-timeframes price-store zip`);
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.download`;
+  try {
+    if (entry.compressedSize === 0) {
+      fs.writeFileSync(tempPath, Buffer.alloc(0));
+    } else {
+      const dataOffset = readRemoteZipLocalDataOffset(entry);
+      const scriptPath = path.join(DASHBOARD_ROOT, "scripts", "extract-remote-zip-member.js");
+      childProcess.execFileSync(process.execPath, [
+        scriptPath,
+        readRemoteZipInfo().sourceUrl,
+        String(dataOffset),
+        String(dataOffset + entry.compressedSize - 1),
+        String(entry.method),
+        tempPath,
+      ], {
+        stdio: ["ignore", "ignore", "pipe"],
+        maxBuffer: 1024 * 1024,
+      });
+    }
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    throw new Error(`Could not extract ${fileName} from all-timeframes zip: ${error.message}`);
+  }
+  return filePath;
 }
 
 function parseDriveFolderFiles(html) {
@@ -329,6 +590,10 @@ function ensurePriceStoreFile(fileName) {
   const filePath = path.join(PRICE_STORE_ROOT, fileName);
   if (fs.existsSync(filePath)) return filePath;
 
+  if (remoteAllTimeframesZipConfigured()) {
+    return ensureRemoteZipMemberFile(fileName);
+  }
+
   if (!PRICE_STORE_ZIP) {
     throw new Error(`Missing price store file ${fileName}. Set PRICE_STORE_ROOT or PRICE_STORE_ZIP.`);
   }
@@ -377,6 +642,7 @@ function readSeriesMeta(timeframe) {
   const file = ensurePriceStoreFile(`series_meta_${timeframe}m.dat`);
   const data = fs.readFileSync(file);
   const result = new Map();
+  let totalRows = 0;
 
   for (let offset = 0; offset + SERIES_META_ROW_SIZE <= data.length; offset += SERIES_META_ROW_SIZE) {
     const instrumentId = data.readInt32LE(offset);
@@ -384,10 +650,12 @@ function readSeriesMeta(timeframe) {
     const rowCount = Number(data.readBigInt64LE(offset + 16));
     if (rowCount > 0) {
       result.set(instrumentId, { rowStart, rowCount });
+      totalRows += rowCount;
     }
   }
 
   cache.seriesByTimeframe.set(key, result);
+  cache.seriesRowCounts.set(key, totalRows);
   return result;
 }
 
@@ -396,15 +664,27 @@ function resolveInstrumentId(symbol) {
   return instruments.get(normalizeSymbol(symbol)) || instruments.get(compactSymbol(symbol));
 }
 
-function readTimestamp(fd, row) {
+function barRowSize(timeframe, barsPath) {
+  const key = String(timeframe);
+  if (cache.barRowSizes.has(key)) return cache.barRowSizes.get(key);
+
+  readSeriesMeta(timeframe);
+  const totalRows = cache.seriesRowCounts.get(key) || 0;
+  const fileSize = fs.statSync(barsPath).size;
+  const rowSize = totalRows > 0 && fileSize % totalRows === 0 ? fileSize / totalRows : BAR_ROW_SIZE;
+  cache.barRowSizes.set(key, rowSize);
+  return rowSize;
+}
+
+function readTimestamp(fd, row, rowSize = BAR_ROW_SIZE) {
   const buffer = Buffer.allocUnsafe(8);
-  fs.readSync(fd, buffer, 0, 8, row * BAR_ROW_SIZE);
+  fs.readSync(fd, buffer, 0, 8, row * rowSize);
   return Number(buffer.readBigInt64LE(0));
 }
 
-function readBar(fd, row) {
+function readBar(fd, row, rowSize = BAR_ROW_SIZE) {
   const buffer = Buffer.allocUnsafe(BAR_ROW_SIZE);
-  fs.readSync(fd, buffer, 0, BAR_ROW_SIZE, row * BAR_ROW_SIZE);
+  fs.readSync(fd, buffer, 0, BAR_ROW_SIZE, row * rowSize);
   return [
     Number(buffer.readBigInt64LE(0)),
     buffer.readDoubleLE(8),
@@ -415,10 +695,10 @@ function readBar(fd, row) {
   ];
 }
 
-function lowerBound(fd, left, right, targetMs) {
+function lowerBound(fd, left, right, targetMs, rowSize = BAR_ROW_SIZE) {
   while (left < right) {
     const mid = Math.floor((left + right) / 2);
-    if (readTimestamp(fd, mid) < targetMs) {
+    if (readTimestamp(fd, mid, rowSize) < targetMs) {
       left = mid + 1;
     } else {
       right = mid;
@@ -427,10 +707,10 @@ function lowerBound(fd, left, right, targetMs) {
   return left;
 }
 
-function upperBound(fd, left, right, targetMs) {
+function upperBound(fd, left, right, targetMs, rowSize = BAR_ROW_SIZE) {
   while (left < right) {
     const mid = Math.floor((left + right) / 2);
-    if (readTimestamp(fd, mid) <= targetMs) {
+    if (readTimestamp(fd, mid, rowSize) <= targetMs) {
       left = mid + 1;
     } else {
       right = mid;
@@ -440,6 +720,10 @@ function upperBound(fd, left, right, targetMs) {
 }
 
 function candlesBetween(symbol, timeframe, fromMs, toMs) {
+  if (shouldUseAllTimeframesZip(timeframe)) {
+    return priceStoreCandlesBetween(symbol, timeframe, fromMs, toMs);
+  }
+
   if (Number(timeframe) === 375) {
     return driveCsvCandlesBetween(symbol, timeframe, fromMs, toMs);
   }
@@ -461,6 +745,15 @@ function candlesBetween(symbol, timeframe, fromMs, toMs) {
     };
   }
 
+  return priceStoreCandlesBetween(symbol, timeframe, fromMs, toMs);
+}
+
+function shouldUseAllTimeframesZip(timeframe) {
+  if (!remoteAllTimeframesZipConfigured()) return false;
+  return allTimeframesSet().has(Number(timeframe));
+}
+
+function priceStoreCandlesBetween(symbol, timeframe, fromMs, toMs) {
   const instrumentId = resolveInstrumentId(symbol);
   if (instrumentId == null) {
     return { status: 404, payload: { error: `Instrument not found: ${symbol}` } };
@@ -473,17 +766,26 @@ function candlesBetween(symbol, timeframe, fromMs, toMs) {
   }
 
   const barsPath = ensurePriceStoreFile(`bars_${timeframe}m.dat`);
+  const rowSize = barRowSize(timeframe, barsPath);
   const fd = fs.openSync(barsPath, "r");
   try {
     const first = meta.rowStart;
     const lastExclusive = meta.rowStart + meta.rowCount;
-    const startRow = lowerBound(fd, first, lastExclusive, fromMs);
-    const endRow = upperBound(fd, startRow, lastExclusive, toMs);
+    const startRow = lowerBound(fd, first, lastExclusive, fromMs, rowSize);
+    const endRow = upperBound(fd, startRow, lastExclusive, toMs, rowSize);
     const candles = [];
     for (let row = startRow; row < endRow; row += 1) {
-      candles.push(readBar(fd, row));
+      candles.push(readBar(fd, row, rowSize));
     }
-    return { status: 200, payload: { symbol, timeframe, candles } };
+    return {
+      status: 200,
+      payload: {
+        symbol,
+        timeframe,
+        source: shouldUseAllTimeframesZip(timeframe) ? "drive-all-timeframes-zip" : "price-store",
+        candles,
+      },
+    };
   } finally {
     fs.closeSync(fd);
   }
@@ -735,6 +1037,8 @@ const server = http.createServer((req, res) => {
         priceStoreZipConfigured: Boolean(PRICE_STORE_ZIP),
         priceStoreZipUrlConfigured: Boolean(PRICE_STORE_ZIP_URL || PRICE_STORE_ZIP_ID),
         symbolCandleStoreConfigured: Boolean(PRICE_STORE_SYMBOL_BASE_URL),
+        allTimeframesZipConfigured: remoteAllTimeframesZipConfigured(),
+        allTimeframes: Array.from(allTimeframesSet()).sort((a, b) => a - b),
         drive375FolderConfigured: Boolean(PRICE_STORE_375_DRIVE_FOLDER_ID),
       });
       return;
@@ -771,7 +1075,9 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`OrderBook dashboard: http://localhost:${PORT}`);
   console.log(`Price store: ${PRICE_STORE_ROOT}`);
-  if (PRICE_STORE_ZIP) {
+  if (remoteAllTimeframesZipConfigured()) {
+    console.log(`All-timeframes zip source: ${allTimeframesZipUrl()}`);
+  } else if (PRICE_STORE_ZIP) {
     console.log(`Price store zip source: ${PRICE_STORE_ZIP}`);
   }
 });

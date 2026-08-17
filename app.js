@@ -533,6 +533,7 @@ function formatShortDateTime(date) {
 function formatCandlePeriod(value) {
   const minutes = Number(value) || 5;
   if (minutes === 375) return "1D";
+  if (minutes === 1875) return "5D";
   if (minutes < 60) return minutes + "m";
   if (minutes % 60 === 0) return (minutes / 60) + "h";
   return minutes + "m";

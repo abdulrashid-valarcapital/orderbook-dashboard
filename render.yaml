@@ -16,6 +16,10 @@ services:
         value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-5m-v1/
       - key: PRICE_STORE_SYMBOL_BASE_URL_TEMPLATE
         value: https://github.com/abdulrashid-valarcapital/orderbook-dashboard/releases/download/candles-{timeframe}m-v1/
+      - key: PRICE_STORE_ALL_TIMEFRAMES_ZIP_ID
+        value: 1v56gV-Lf6cR09Q0hgC3u-yt0JTMSRktC
+      - key: PRICE_STORE_ALL_TIMEFRAMES
+        value: 5,15,30,60,375,1875
       - key: PRICE_STORE_375_DRIVE_FOLDER_ID
         value: 149bAVH0lOopQL8CHyiDcoTogzvFdPPub
       - key: PRICE_STORE_375_SYMBOL_BASE_URL
