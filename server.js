@@ -437,6 +437,50 @@ function ensureRemoteZipMemberFile(fileName) {
   return filePath;
 }
 
+function remoteZipMemberUncompressedSize(fileName) {
+  const entry = remoteZipMemberFor(fileName);
+  if (!entry) throw new Error(`Missing ${fileName} in all-timeframes price-store zip`);
+  return entry.uncompressedSize;
+}
+
+function ensureRemoteZipMemberSlice(fileName, startByte, byteLength, cacheKey) {
+  const safeName = String(cacheKey || `${fileName}-${startByte}-${byteLength}`).replace(/[^A-Za-z0-9_.-]/g, "_");
+  const slicePath = path.join(PRICE_STORE_CACHE_ROOT, "slices", safeName);
+  if (fs.existsSync(slicePath) && fs.statSync(slicePath).size === byteLength) return slicePath;
+
+  const entry = remoteZipMemberFor(fileName);
+  if (!entry) throw new Error(`Missing ${fileName} in all-timeframes price-store zip`);
+
+  fs.mkdirSync(path.dirname(slicePath), { recursive: true });
+  const tempPath = `${slicePath}.download`;
+  try {
+    if (byteLength === 0) {
+      fs.writeFileSync(tempPath, Buffer.alloc(0));
+    } else {
+      const dataOffset = readRemoteZipLocalDataOffset(entry);
+      const scriptPath = path.join(DASHBOARD_ROOT, "scripts", "extract-remote-zip-slice.js");
+      childProcess.execFileSync(process.execPath, [
+        scriptPath,
+        readRemoteZipInfo().sourceUrl,
+        String(dataOffset),
+        String(dataOffset + entry.compressedSize - 1),
+        String(entry.method),
+        String(startByte),
+        String(byteLength),
+        tempPath,
+      ], {
+        stdio: ["ignore", "ignore", "pipe"],
+        maxBuffer: 1024 * 1024,
+      });
+    }
+    fs.renameSync(tempPath, slicePath);
+  } catch (error) {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    throw new Error(`Could not extract ${fileName} slice from all-timeframes zip: ${error.message}`);
+  }
+  return slicePath;
+}
+
 function parseDriveFolderFiles(html) {
   const files = new Map();
 
@@ -670,7 +714,9 @@ function barRowSize(timeframe, barsPath) {
 
   readSeriesMeta(timeframe);
   const totalRows = cache.seriesRowCounts.get(key) || 0;
-  const fileSize = fs.statSync(barsPath).size;
+  const fileSize = barsPath
+    ? fs.statSync(barsPath).size
+    : remoteZipMemberUncompressedSize(`bars_${timeframe}m.dat`);
   const rowSize = totalRows > 0 && fileSize % totalRows === 0 ? fileSize / totalRows : BAR_ROW_SIZE;
   cache.barRowSizes.set(key, rowSize);
   return rowSize;
@@ -765,14 +811,24 @@ function priceStoreCandlesBetween(symbol, timeframe, fromMs, toMs) {
     return { status: 404, payload: { error: `No ${timeframe}m candles found for ${symbol}` } };
   }
 
-  const barsPath = ensurePriceStoreFile(`bars_${timeframe}m.dat`);
-  const rowSize = barRowSize(timeframe, barsPath);
+  const barsFileName = `bars_${timeframe}m.dat`;
+  const useRemoteZipSlice = shouldUseAllTimeframesZip(timeframe);
+  const rowSize = barRowSize(timeframe, useRemoteZipSlice ? null : ensurePriceStoreFile(barsFileName));
+  const first = meta.rowStart;
+  const lastExclusive = meta.rowStart + meta.rowCount;
+  const barsPath = useRemoteZipSlice
+    ? ensureRemoteZipMemberSlice(
+      barsFileName,
+      first * rowSize,
+      meta.rowCount * rowSize,
+      `${compactSymbol(symbol)}_${timeframe}m_${first}_${lastExclusive}_${rowSize}.dat`,
+    )
+    : ensurePriceStoreFile(barsFileName);
   const fd = fs.openSync(barsPath, "r");
   try {
-    const first = meta.rowStart;
-    const lastExclusive = meta.rowStart + meta.rowCount;
-    const startRow = lowerBound(fd, first, lastExclusive, fromMs, rowSize);
-    const endRow = upperBound(fd, startRow, lastExclusive, toMs, rowSize);
+    const sliceOffset = useRemoteZipSlice ? first : 0;
+    const startRow = lowerBound(fd, first - sliceOffset, lastExclusive - sliceOffset, fromMs, rowSize);
+    const endRow = upperBound(fd, startRow, lastExclusive - sliceOffset, toMs, rowSize);
     const candles = [];
     for (let row = startRow; row < endRow; row += 1) {
       candles.push(readBar(fd, row, rowSize));
