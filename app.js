@@ -736,8 +736,7 @@ function moveSelectedSno(direction) {
 
 function updateIndicatorControls() {
   const maxReached = state.activeIndicators.length >= 3;
-  const selected = els.indicatorSelect.value;
-  els.addIndicator.disabled = !state.trades.length || maxReached || state.activeIndicators.includes(selected);
+  els.addIndicator.disabled = !state.trades.length || maxReached;
   els.indicatorChips.innerHTML = state.activeIndicators.map((id) => (
     '<span class="indicator-chip">' + escapeHtml(indicatorChipLabel(id)) +
     '<button type="button" class="indicator-settings" data-settings="' + escapeHtml(id) + '" title="Settings for ' + escapeHtml(indicatorLabel(id)) + '">set</button>' +
@@ -756,6 +755,7 @@ function updateIndicatorControls() {
 }
 
 function indicatorLabel(id) {
+  const type = indicatorType(id);
   return {
     bb: "BollingerBand",
     sma: "SMA",
@@ -765,20 +765,35 @@ function indicatorLabel(id) {
     adx: "ADX",
     supertrend: "Supertrend",
     rs: "RelativeStrength",
-  }[id] || id;
+  }[type] || type;
+}
+
+function indicatorType(id) {
+  return String(id || "").split("__")[0];
+}
+
+function createIndicatorInstance(type) {
+  const base = indicatorType(type);
+  let instance = base;
+  while (state.activeIndicators.includes(instance) || state.indicatorSettings[instance]) {
+    instance = base + "__" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+  return instance;
 }
 
 function indicatorChipLabel(id) {
+  const type = indicatorType(id);
   const settings = getIndicatorSettings(id);
-  if (id === "bb") return "BB " + settings.length + " " + settings.mult;
-  if (id === "macd") return "MACD " + settings.fast + " " + settings.slow + " " + settings.signal;
-  if (id === "supertrend") return "Supertrend " + settings.atrLength + " " + settings.mult;
-  if (id === "rs") return "RS " + settings.benchmark + " " + settings.lookback + " " + settings.anchorMode;
-  if (id === "adx" || id === "rsi" || id === "sma" || id === "ema") return indicatorLabel(id) + " " + settings.length;
+  if (type === "bb") return "BB " + settings.length + " " + settings.mult;
+  if (type === "macd") return "MACD " + settings.fast + " " + settings.slow + " " + settings.signal;
+  if (type === "supertrend") return "Supertrend " + settings.atrLength + " " + settings.mult;
+  if (type === "rs") return "RS " + settings.benchmark + " " + settings.lookback + " " + settings.anchorMode;
+  if (type === "adx" || type === "rsi" || type === "sma" || type === "ema") return indicatorLabel(id) + " " + settings.length;
   return indicatorLabel(id);
 }
 
 function defaultIndicatorSettings(id) {
+  const type = indicatorType(id);
   return {
     bb: { length: 20, mult: 2, upperColor: "#1e90ff", middleColor: "#ff8a00", lowerColor: "#1e90ff", fillColor: "#1e90ff" },
     sma: { length: 20, color: "#ff8a00" },
@@ -788,7 +803,7 @@ function defaultIndicatorSettings(id) {
     adx: { length: 14, adxColor: "#17202a", plusColor: "#12805c", minusColor: "#c7362f" },
     supertrend: { atrLength: 10, mult: 3, upColor: "#12805c", downColor: "#c7362f" },
     rs: { benchmark: "NIFTY50", lookback: 25, anchorMode: "low", color: "#0f766e" },
-  }[id] || {};
+  }[type] || {};
 }
 
 function getIndicatorSettings(id) {
@@ -837,6 +852,7 @@ function saveIndicatorSettings() {
 }
 
 function indicatorSettingFields(id) {
+  const type = indicatorType(id);
   return {
     bb: [
       { key: "length", label: "Length", type: "number", min: 1 },
@@ -895,15 +911,16 @@ function indicatorSettingFields(id) {
       },
       { key: "color", label: "Line Color", type: "color" },
     ],
-  }[id] || [];
+  }[type] || [];
 }
 
 function normalizeIndicatorSettings(id, settings) {
+  const type = indicatorType(id);
   Object.keys(settings).forEach((key) => {
     if (typeof settings[key] === "number") settings[key] = Math.max(key === "mult" ? 0.1 : 1, settings[key] || 1);
   });
-  if (id === "macd" && settings.fast >= settings.slow) settings.slow = settings.fast + 1;
-  if (id === "rs") {
+  if (type === "macd" && settings.fast >= settings.slow) settings.slow = settings.fast + 1;
+  if (type === "rs") {
     settings.benchmark = String(settings.benchmark || "NIFTY50").trim().toUpperCase() || "NIFTY50";
     settings.lookback = Math.max(1, Math.round(Number(settings.lookback) || 25));
     if (!["low", "high", "both", "fixed"].includes(settings.anchorMode)) settings.anchorMode = "low";
@@ -2224,7 +2241,7 @@ function drawRealCandleTrade(trade, series) {
   const indicatorData = buildIndicatorData(series);
   const panelIndicators = indicatorData.filter((item) => item.panel);
   const panelHeights = panelIndicators.map((indicator) => (
-    indicator.id === "rs"
+    indicatorType(indicator.id) === "rs"
       ? Math.max(112, Math.min(150, h * 0.2))
       : Math.max(64, Math.min(86, h * 0.12))
   ));
@@ -2406,7 +2423,7 @@ function drawBenchmarkPanel(trade, benchmarkSeries, left, plotW, slotWidth, top,
       instrument: benchmarkSeries.instrument,
       chartCandles: benchmarkSeries.sourceCandles,
       allCandles: benchmarkSeries.allCandles || availableCandles,
-      indicatorIds: state.activeIndicators.filter((id) => id !== "rs"),
+      indicatorIds: state.activeIndicators.filter((id) => indicatorType(id) !== "rs"),
     })
     : [];
   const priceIndicators = benchmarkIndicatorData.filter((item) => !item.panel);
@@ -2723,11 +2740,12 @@ function buildIndicatorData(series, options = {}) {
   }
   const indicatorStartAtWindow = latestCandleIndexAtOrBefore(indicatorCandles, chartStartTime);
   const configuredWarmup = Math.max(220, ...activeIndicators.map((id) => {
+    const type = indicatorType(id);
     const settings = getIndicatorSettings(id);
-    if (id === "rs") return (Number(settings.lookback) || 25) + 5;
-    if (id === "bb" || id === "sma" || id === "ema" || id === "rsi" || id === "adx") return (Number(settings.length) || 14) * 3;
-    if (id === "macd") return (Number(settings.slow) || 26) + (Number(settings.signal) || 9) + 20;
-    if (id === "supertrend") return (Number(settings.atrLength) || 10) * 4;
+    if (type === "rs") return (Number(settings.lookback) || 25) + 5;
+    if (type === "bb" || type === "sma" || type === "ema" || type === "rsi" || type === "adx") return (Number(settings.length) || 14) * 3;
+    if (type === "macd") return (Number(settings.slow) || 26) + (Number(settings.signal) || 9) + 20;
+    if (type === "supertrend") return (Number(settings.atrLength) || 10) * 4;
     return 0;
   }));
   const warmup = Math.min(Math.max(0, indicatorStartAtWindow), configuredWarmup);
@@ -2740,14 +2758,15 @@ function buildIndicatorData(series, options = {}) {
   const visibleLength = chartCandles.length;
 
   return activeIndicators.map((id) => {
+    const type = indicatorType(id);
     const settings = getIndicatorSettings(id);
-    if (id === "sma") {
+    if (type === "sma") {
       return { id, period: indicatorPeriod, panel: false, series: [{ label: indicatorLineLabel("SMA " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(sma(closes, settings.length), alignedIndexes, visibleLength) }] };
     }
-    if (id === "ema") {
+    if (type === "ema") {
       return { id, period: indicatorPeriod, panel: false, series: [{ label: indicatorLineLabel("EMA " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(ema(closes, settings.length), alignedIndexes, visibleLength) }] };
     }
-    if (id === "bb") {
+    if (type === "bb") {
       const bb = bollingerBands(closes, settings.length, settings.mult);
       return {
         id,
@@ -2762,10 +2781,10 @@ function buildIndicatorData(series, options = {}) {
         ],
       };
     }
-    if (id === "rsi") {
+    if (type === "rsi") {
       return { id, period: indicatorPeriod, panel: true, min: 0, max: 100, guides: [30, 70], series: [{ label: indicatorLineLabel("RSI " + settings.length, indicatorPeriod), color: settings.color, values: alignIndicatorValues(rsi(closes, settings.length), alignedIndexes, visibleLength) }] };
     }
-    if (id === "macd") {
+    if (type === "macd") {
       const macd = macdSeries(closes, settings.fast, settings.slow, settings.signal);
       return {
         id,
@@ -2781,7 +2800,7 @@ function buildIndicatorData(series, options = {}) {
         ],
       };
     }
-    if (id === "adx") {
+    if (type === "adx") {
       const adx = adxSeries(highs, lows, closes, settings.length);
       return {
         id,
@@ -2797,7 +2816,7 @@ function buildIndicatorData(series, options = {}) {
         ],
       };
     }
-    if (id === "supertrend") {
+    if (type === "supertrend") {
       const trend = supertrendSeries(highs, lows, closes, settings.atrLength, settings.mult);
       return {
         id,
@@ -2809,7 +2828,7 @@ function buildIndicatorData(series, options = {}) {
         ],
       };
     }
-    if (id === "rs") {
+    if (type === "rs") {
       const benchmark = String(settings.benchmark || "NIFTY50").trim().toUpperCase() || "NIFTY50";
       const benchmarkCandles = candlesForInstrument(benchmark, indicatorPeriod);
       if (!benchmarkCandles.length) {
@@ -2941,8 +2960,8 @@ function drawIndicatorPanels(indicators, left, slotWidth, top, panelHeights, wid
     (indicator.guides || []).forEach((guide) => {
       const y = yScale(guide, panelTop, panelHeight, min, max);
       ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = indicator.id === "rs" && guide === 100 ? "#111827" : "#cbd5e1";
-      ctx.lineWidth = indicator.id === "rs" && guide === 100 ? 1.2 : 1;
+      ctx.strokeStyle = indicatorType(indicator.id) === "rs" && guide === 100 ? "#111827" : "#cbd5e1";
+      ctx.lineWidth = indicatorType(indicator.id) === "rs" && guide === 100 ? 1.2 : 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(left + width, y);
@@ -3928,9 +3947,10 @@ els.searchInput.addEventListener("input", applyFilters);
 els.indicatorSelect.addEventListener("change", updateIndicatorControls);
 els.addIndicator.addEventListener("click", () => {
   const indicator = els.indicatorSelect.value;
-  if (!indicator || state.activeIndicators.includes(indicator) || state.activeIndicators.length >= 3) return;
-  getIndicatorSettings(indicator);
-  state.activeIndicators = state.activeIndicators.concat(indicator);
+  if (!indicator || state.activeIndicators.length >= 3) return;
+  const instanceId = createIndicatorInstance(indicator);
+  getIndicatorSettings(instanceId);
+  state.activeIndicators = state.activeIndicators.concat(instanceId);
   updateIndicatorControls();
   showTrade(state.activeIndex);
 });
