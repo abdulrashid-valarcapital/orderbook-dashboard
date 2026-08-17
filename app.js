@@ -16,6 +16,7 @@ const state = {
   chartWindowSizeByPeriod: new Map(),
   chartHover: null,
   candleErrorRetryMs: 15000,
+  candleFetchTimeoutMs: 60000,
   activeIndicators: [],
   indicatorSettings: {},
   editingIndicator: null,
@@ -3373,6 +3374,13 @@ function requestServerCandles(trade, period = state.candlePeriod) {
   const cachedError = state.candleRequestErrors.get(key);
   if (cachedError) {
     const errorAge = Date.now() - (cachedError.at || 0);
+    if (!isRetryableCandleError(cachedError.message)) {
+      return {
+        status: "error",
+        label: "No real candles loaded",
+        message: cachedError.message || "Candle request failed.",
+      };
+    }
     if (errorAge < state.candleErrorRetryMs) {
       scheduleCandleRetry(key, state.candleErrorRetryMs - errorAge);
       return {
@@ -3400,7 +3408,12 @@ function requestServerCandles(trade, period = state.candlePeriod) {
     toMs: String(toMs),
   });
 
-  fetch(candleApiUrl(params))
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), state.candleFetchTimeoutMs)
+    : null;
+
+  fetch(candleApiUrl(params), controller ? { signal: controller.signal } : undefined)
     .then((response) => {
       if (!response.ok) {
         return response.json().catch(() => ({})).then((payload) => {
@@ -3410,6 +3423,7 @@ function requestServerCandles(trade, period = state.candlePeriod) {
       return response.json();
     })
     .then((payload) => {
+      if (timeout) clearTimeout(timeout);
       const records = (payload.candles || []).map((item) => ({
         Instrument: payload.symbol || trade.instrument,
         DateTime: item[0],
@@ -3426,23 +3440,28 @@ function requestServerCandles(trade, period = state.candlePeriod) {
           message: "The candle store returned zero candles for this instrument/time window.",
           at: Date.now(),
         });
-        scheduleCandleRetry(key, state.candleErrorRetryMs);
       }
       state.candles = state.candles.concat(normalizeCandleData(records, payload.timeframe || candlePeriod));
       invalidateCandleCaches();
       showTrade(state.activeIndex);
     })
     .catch((error) => {
+      if (timeout) clearTimeout(timeout);
       state.candleRequests.delete(key);
       if (/Failed to fetch|NetworkError|Load failed/i.test(error.message)) {
         state.candleFetchDisabled = window.location.protocol === "file:";
       }
+      const message = error.name === "AbortError"
+        ? "Candle request timed out. The server did not finish loading this data in time."
+        : (error.message || "Candle request failed.");
       state.candleRequestErrors.set(key, {
-        message: error.message || "Candle request failed.",
+        message,
         at: Date.now(),
       });
-      scheduleCandleRetry(key, state.candleErrorRetryMs);
-      console.warn(error.message);
+      if (isRetryableCandleError(message)) {
+        scheduleCandleRetry(key, state.candleErrorRetryMs);
+      }
+      console.warn(message);
       showTrade(state.activeIndex);
     });
 
@@ -3461,6 +3480,10 @@ function scheduleCandleRetry(key, delayMs) {
     showTrade(state.activeIndex);
   }, Math.max(1000, delayMs || state.candleErrorRetryMs));
   state.candleRetryTimers.set(key, timer);
+}
+
+function isRetryableCandleError(message) {
+  return /Failed to fetch|NetworkError|Load failed|temporarily unavailable|timed out/i.test(String(message || ""));
 }
 
 function candleApiUrl(params) {

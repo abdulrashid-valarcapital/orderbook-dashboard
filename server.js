@@ -35,6 +35,7 @@ const PRICE_STORE_ROOT = process.env.PRICE_STORE_ROOT
   || (PRICE_STORE_ZIP ? PRICE_STORE_CACHE_ROOT : "/Users/abdulrashid/Desktop/strategyConfig/common/newPriceStore");
 const BAR_ROW_SIZE = 48;
 const SERIES_META_ROW_SIZE = 24;
+const REMOTE_ZIP_FULL_MEMBER_FALLBACK_LIMIT = Number(process.env.REMOTE_ZIP_FULL_MEMBER_FALLBACK_LIMIT || 100 * 1024 * 1024);
 const MARKET_OPEN_MINUTES = 9 * 60 + 15;
 const IST_OFFSET_MS = 330 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -476,6 +477,24 @@ function ensureRemoteZipMemberSlice(fileName, startByte, byteLength, cacheKey) {
     fs.renameSync(tempPath, slicePath);
   } catch (error) {
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    if (entry.uncompressedSize > 0 && entry.uncompressedSize <= REMOTE_ZIP_FULL_MEMBER_FALLBACK_LIMIT) {
+      try {
+        const memberPath = ensureRemoteZipMemberFile(fileName);
+        const fd = fs.openSync(memberPath, "r");
+        try {
+          const output = Buffer.allocUnsafe(byteLength);
+          const bytesRead = fs.readSync(fd, output, 0, byteLength, startByte);
+          if (bytesRead === byteLength) {
+            fs.writeFileSync(slicePath, output);
+            return slicePath;
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch (_) {
+        // Keep the original slice extraction error; it is more useful for diagnostics.
+      }
+    }
     throw new Error(`Could not extract ${fileName} slice from all-timeframes zip: ${error.message}`);
   }
   return slicePath;
@@ -766,32 +785,40 @@ function upperBound(fd, left, right, targetMs, rowSize = BAR_ROW_SIZE) {
 }
 
 function candlesBetween(symbol, timeframe, fromMs, toMs) {
-  if (shouldUseAllTimeframesZip(timeframe)) {
-    return priceStoreCandlesBetween(symbol, timeframe, fromMs, toMs);
+  const normalizedTimeframe = Number(timeframe);
+
+  if (PRICE_STORE_SYMBOL_BASE_URL || (normalizedTimeframe === 375 && PRICE_STORE_375_SYMBOL_BASE_URL)) {
+    const symbolResult = symbolCandlesBetween(symbol, normalizedTimeframe, fromMs, toMs);
+    if (symbolResult.status === 200) return symbolResult;
+    if (normalizedTimeframe === 375) {
+      const driveResult = driveCsvCandlesBetween(symbol, normalizedTimeframe, fromMs, toMs);
+      if (driveResult.status === 200) return driveResult;
+    }
+    if (!shouldUseAllTimeframesZip(normalizedTimeframe)) return symbolResult;
   }
 
-  if (Number(timeframe) === 375) {
-    return driveCsvCandlesBetween(symbol, timeframe, fromMs, toMs);
+  if (normalizedTimeframe === 375) {
+    return driveCsvCandlesBetween(symbol, normalizedTimeframe, fromMs, toMs);
   }
 
-  if (PRICE_STORE_SYMBOL_BASE_URL) {
-    return symbolCandlesBetween(symbol, timeframe, fromMs, toMs);
+  if (shouldUseAllTimeframesZip(normalizedTimeframe)) {
+    return priceStoreCandlesBetween(symbol, normalizedTimeframe, fromMs, toMs);
   }
 
-  if (timeframe === 60) {
+  if (normalizedTimeframe === 60) {
     const source = candlesBetween(symbol, 5, fromMs, toMs);
     if (source.status !== 200) return source;
     return {
       status: 200,
       payload: {
         symbol,
-        timeframe,
-        candles: aggregateCandles(source.payload.candles, timeframe),
+        timeframe: normalizedTimeframe,
+        candles: aggregateCandles(source.payload.candles, normalizedTimeframe),
       },
     };
   }
 
-  return priceStoreCandlesBetween(symbol, timeframe, fromMs, toMs);
+  return priceStoreCandlesBetween(symbol, normalizedTimeframe, fromMs, toMs);
 }
 
 function shouldUseAllTimeframesZip(timeframe) {
@@ -923,6 +950,15 @@ function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
     };
   }
 
+  if (timeframe > 375) {
+    return {
+      status: 404,
+      payload: {
+        error: `No hosted ${timeframe}m candles found for ${symbol}. Weekly candles need direct 1875m hosted data.`,
+      },
+    };
+  }
+
   const source = readRemoteSymbolCandles(symbol, 5, true);
   if (!source || !source.length) {
     return { status: 404, payload: { error: `No hosted 5m candles found for ${symbol}` } };
@@ -938,6 +974,20 @@ function symbolCandlesBetween(symbol, timeframe, fromMs, toMs) {
       candles,
     },
   };
+}
+
+function publicCandleErrorMessage(error, symbol, timeframe) {
+  const message = String(error && error.message ? error.message : error || "");
+  if (/Quota exceeded|Too many users|can't view or download this file/i.test(message)) {
+    return "Google Drive candle zip quota is exceeded right now. Use hosted per-symbol candle files for this timeframe or wait for Drive quota to reset.";
+  }
+  if (/Could not read remote zip size|Remote zip central directory/i.test(message)) {
+    return `Candle store could not open the Google Drive zip for ${timeframe}m ${symbol}. The Drive file may be quota-limited or not serving range metadata right now.`;
+  }
+  if (/Could not extract|invalid code lengths set|Only wrote|Range download failed|downloaded file is not a zip/i.test(message)) {
+    return `Candle store could not read ${timeframe}m data for ${symbol}. The Google Drive zip is not serving a valid range for this request.`;
+  }
+  return message || "Candle request failed";
 }
 
 function readRemoteSymbolCandles(symbol, timeframe = 5, required = true) {
@@ -1111,8 +1161,13 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const result = candlesBetween(symbol, timeframe, fromMs, toMs);
-      sendJson(res, result.status, result.payload);
+      try {
+        const result = candlesBetween(symbol, timeframe, fromMs, toMs);
+        sendJson(res, result.status, result.payload);
+      } catch (error) {
+        console.error(`Candle API error for ${symbol} ${timeframe}m:`, error && error.stack ? error.stack : error);
+        sendJson(res, 503, { error: publicCandleErrorMessage(error, symbol, timeframe) });
+      }
       return;
     }
 
