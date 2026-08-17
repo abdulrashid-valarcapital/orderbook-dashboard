@@ -50,11 +50,11 @@ function readSeriesMeta(filePath) {
   return result;
 }
 
-function readBars(fd, rowStart, rowCount) {
+function readBars(fd, rowStart, rowCount, rowSize) {
   const candles = [];
   const buffer = Buffer.allocUnsafe(BAR_ROW_SIZE);
   for (let index = 0; index < rowCount; index += 1) {
-    fs.readSync(fd, buffer, 0, BAR_ROW_SIZE, (rowStart + index) * BAR_ROW_SIZE);
+    fs.readSync(fd, buffer, 0, BAR_ROW_SIZE, (rowStart + index) * rowSize);
     candles.push([
       Number(buffer.readBigInt64LE(0)),
       buffer.readDoubleLE(8),
@@ -72,6 +72,9 @@ fs.mkdirSync(outputRoot, { recursive: true });
 const instruments = readInstrumentDict(path.join(priceStoreRoot, "instrument_dict.dat"));
 const series = readSeriesMeta(path.join(priceStoreRoot, `series_meta_${timeframe}m.dat`));
 const barsPath = path.join(priceStoreRoot, `bars_${timeframe}m.dat`);
+const totalRows = Array.from(series.values()).reduce((sum, item) => sum + item.rowCount, 0);
+const barsSize = fs.statSync(barsPath).size;
+const rowSize = totalRows > 0 && barsSize % totalRows === 0 ? barsSize / totalRows : BAR_ROW_SIZE;
 const fd = fs.openSync(barsPath, "r");
 
 let exported = 0;
@@ -81,7 +84,7 @@ try {
     if (!symbol) continue;
     const compact = compactSymbol(symbol);
     if (!compact) continue;
-    const candles = readBars(fd, meta.rowStart, meta.rowCount);
+    const candles = readBars(fd, meta.rowStart, meta.rowCount, rowSize);
     if (!candles.length) continue;
     const outputPath = path.join(outputRoot, `${compact}_${timeframe}m.json.gz`);
     fs.writeFileSync(outputPath, zlib.gzipSync(JSON.stringify(candles), { level: 9 }));
